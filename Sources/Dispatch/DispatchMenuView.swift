@@ -1,5 +1,4 @@
 import AppKit
-import CoreGraphics
 import SwiftUI
 
 struct DispatchMenuView: View {
@@ -144,12 +143,11 @@ struct DispatchMenuView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScreenSelectionMap(
-                    screens: viewModel.availableScreens,
-                    windowSnapshots: viewModel.liveWindowSnapshots
+                    screens: viewModel.availableScreens
                 )
-                .frame(height: 180)
+                .frame(height: 120)
 
-                Text("Live monitor + terminal layout preview. Existing windows are auto-detected.")
+                Text("Display map only. Terminal detection runs in the background.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -458,16 +456,10 @@ private extension Color {
 
 private struct ScreenSelectionMap: View {
     let screens: [DisplayTarget]
-    let windowSnapshots: [TerminalWindowSnapshot]
-
-    private let refreshTimer = Timer.publish(every: 1.25, on: .main, in: .common).autoconnect()
-
-    @State private var snapshots: [String: NSImage] = [:]
 
     var body: some View {
         GeometryReader { proxy in
             let screenRects = rectangles(for: screens, in: proxy.size)
-            let overlays = mappedWindowOverlays(in: proxy.size)
 
             ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: 10)
@@ -476,214 +468,28 @@ private struct ScreenSelectionMap: View {
                 ForEach(Array(screens.enumerated()), id: \.element.id) { index, screen in
                     if let rect = screenRects[screen.id] {
                         ZStack {
-                            if let snapshot = snapshots[screen.id] {
-                                Image(nsImage: snapshot)
-                                    .resizable()
-                                    .scaledToFill()
-                            } else {
-                                LinearGradient(
-                                    colors: [Color.gray.opacity(0.28), Color.gray.opacity(0.16)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            }
-
-                            Rectangle()
-                                .fill(Color.black.opacity(0.30))
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.gray.opacity(0.18))
 
                             VStack(spacing: 2) {
                                 Text("Display \(index + 1)")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.white)
                                 Text(sizeLabel(screen))
                                     .font(.caption2)
-                                    .foregroundStyle(.white.opacity(0.85))
+                                    .foregroundStyle(.secondary)
                             }
                             .padding(4)
                         }
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.white.opacity(0.55), lineWidth: 1)
+                                .stroke(Color.gray.opacity(0.45), lineWidth: 1)
                         )
-                        .overlay(alignment: .topLeading) {
-                            if let count = windowCountByDisplay[screen.id], count > 0 {
-                                Text("\(count)")
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(.thinMaterial, in: Capsule())
-                                    .padding(5)
-                            }
-                        }
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
                     }
                 }
-
-                ForEach(overlays, id: \.id) { cell in
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.white.opacity(0.08))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .stroke(Color.white.opacity(0.85), lineWidth: 1)
-                        )
-                        .frame(width: cell.rect.width, height: cell.rect.height)
-                        .position(x: cell.rect.midX, y: cell.rect.midY)
-                }
-
-                ForEach(overlays, id: \.id) { cell in
-                    if cell.rect.width > 32, cell.rect.height > 14 {
-                        Text("\(cell.windowID)")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.black.opacity(0.55), in: Capsule())
-                            .position(x: cell.rect.midX, y: cell.rect.minY + 8)
-                    }
-                }
-
-                if overlays.isEmpty, !windowSnapshots.isEmpty {
-                    ForEach(placeholderOverlays(in: proxy.size), id: \.id) { cell in
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.white.opacity(0.24))
-                            .frame(width: cell.rect.width, height: cell.rect.height)
-                            .position(x: cell.rect.midX, y: cell.rect.midY)
-                    }
-                }
-
-            }
-            .onAppear {
-                refreshSnapshots()
-            }
-            .onChange(of: screens) { _ in
-                refreshSnapshots()
-            }
-            .onReceive(refreshTimer) { _ in
-                refreshSnapshots()
             }
         }
-    }
-
-    private struct PreviewCell {
-        let id: String
-        let rect: CGRect
-        let windowID: Int
-    }
-
-    private var windowCountByDisplay: [String: Int] {
-        guard !screens.isEmpty else { return [:] }
-        let maxY = screens.map(\.geometry.frame.maxY).max() ?? 0
-        var counts: [String: Int] = [:]
-
-        for snapshot in windowSnapshots {
-            let frame = appKitFrame(from: snapshot, globalMaxY: maxY)
-            let midpoint = CGPoint(x: frame.midX, y: frame.midY)
-            if let display = screens.first(where: { $0.geometry.frame.contains(midpoint) }) {
-                counts[display.id, default: 0] += 1
-            }
-        }
-
-        return counts
-    }
-
-    private func mappedWindowOverlays(in size: CGSize) -> [PreviewCell] {
-        guard !screens.isEmpty else { return [] }
-        let world = worldBounds(for: screens)
-        let maxY = world.maxY
-
-        return windowSnapshots.compactMap { snapshot in
-            let appKit = appKitFrame(from: snapshot, globalMaxY: maxY)
-            let mapped = mapToPreview(frame: appKit, in: size, world: world)
-            guard mapped.width > 3, mapped.height > 3 else { return nil }
-            return PreviewCell(id: String(snapshot.windowID), rect: mapped, windowID: snapshot.windowID)
-        }
-    }
-
-    private func placeholderOverlays(in size: CGSize) -> [PreviewCell] {
-        let screenRects = rectangles(for: screens, in: size)
-        let total = min(18, windowSnapshots.count)
-        guard total > 0 else { return [] }
-
-        var cells: [PreviewCell] = []
-        var counter = 0
-        for screen in screens {
-            guard let container = screenRects[screen.id] else { continue }
-            let perScreen = max(1, Int(round(Double(total) / Double(max(1, screens.count)))))
-            let cols = max(1, Int(ceil(sqrt(Double(perScreen)))))
-            let rows = max(1, Int(ceil(Double(perScreen) / Double(cols))))
-
-            let inset: CGFloat = 8
-            let gap: CGFloat = 2
-            let inner = container.insetBy(dx: inset, dy: inset)
-            let cellWidth = max(2, (inner.width - CGFloat(cols - 1) * gap) / CGFloat(cols))
-            let cellHeight = max(2, (inner.height - CGFloat(rows - 1) * gap) / CGFloat(rows))
-
-            for index in 0..<perScreen where counter < total {
-                let row = index / cols
-                let col = index % cols
-                let x = inner.minX + CGFloat(col) * (cellWidth + gap)
-                let y = inner.minY + CGFloat(row) * (cellHeight + gap)
-                let rect = CGRect(x: x, y: y, width: cellWidth, height: cellHeight)
-                cells.append(PreviewCell(id: "placeholder-\(counter)", rect: rect, windowID: counter))
-                counter += 1
-            }
-        }
-
-        return cells
-    }
-
-    private func appKitFrame(from snapshot: TerminalWindowSnapshot, globalMaxY: CGFloat) -> CGRect {
-        let left = CGFloat(snapshot.left)
-        let top = CGFloat(snapshot.top)
-        let right = CGFloat(snapshot.right)
-        let bottom = CGFloat(snapshot.bottom)
-        let width = max(1, right - left)
-        let height = max(1, bottom - top)
-        let minY = globalMaxY - bottom
-        return CGRect(x: left, y: minY, width: width, height: height)
-    }
-
-    private func worldBounds(for screens: [DisplayTarget]) -> CGRect {
-        let frames = screens.map(\.geometry.frame)
-        let minX = frames.map(\.minX).min() ?? 0
-        let minY = frames.map(\.minY).min() ?? 0
-        let maxX = frames.map(\.maxX).max() ?? 1
-        let maxY = frames.map(\.maxY).max() ?? 1
-        return CGRect(x: minX, y: minY, width: max(1, maxX - minX), height: max(1, maxY - minY))
-    }
-
-    private func mapToPreview(frame: CGRect, in size: CGSize, world: CGRect) -> CGRect {
-        let padding: CGFloat = 8
-        let usableWidth = max(1, size.width - (padding * 2))
-        let usableHeight = max(1, size.height - (padding * 2))
-        let scaleX = usableWidth / max(world.width, 1)
-        let scaleY = usableHeight / max(world.height, 1)
-        let scale = min(scaleX, scaleY)
-        let contentWidth = world.width * scale
-        let contentHeight = world.height * scale
-        let offsetX = (size.width - contentWidth) / 2
-        let offsetY = (size.height - contentHeight) / 2
-
-        let x = offsetX + (frame.minX - world.minX) * scale
-        let y = offsetY + (world.maxY - frame.maxY) * scale
-        let width = frame.width * scale
-        let height = frame.height * scale
-        return CGRect(x: x, y: y, width: width, height: height).insetBy(dx: 1, dy: 1)
-    }
-
-    private func refreshSnapshots() {
-        var updated: [String: NSImage] = [:]
-
-        for screen in screens {
-            guard let displayID = screen.cgDisplayID else { continue }
-            guard let cgImage = CGDisplayCreateImage(displayID) else { continue }
-            let size = NSSize(width: cgImage.width, height: cgImage.height)
-            updated[screen.id] = NSImage(cgImage: cgImage, size: size)
-        }
-
-        snapshots = updated
     }
 
     private func sizeLabel(_ screen: DisplayTarget) -> String {
