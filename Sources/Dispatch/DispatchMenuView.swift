@@ -170,6 +170,10 @@ struct DispatchMenuView: View {
             Button("Close Launched") {
                 viewModel.closeLaunched()
             }
+
+            Button("Focus Next Alert") {
+                viewModel.focusNextAttention()
+            }
         }
     }
 
@@ -182,6 +186,25 @@ struct DispatchMenuView: View {
                 Text("\(viewModel.activeAgents.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if !viewModel.needsAttentionAgents.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text("\(viewModel.needsAttentionAgents.count) terminal(s) need human attention")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Button("Focus Next") {
+                        viewModel.focusNextAttention()
+                    }
+                    .controlSize(.small)
+                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.yellow.opacity(0.16))
+                )
             }
 
             if viewModel.activeAgents.isEmpty {
@@ -209,12 +232,27 @@ struct DispatchMenuView: View {
 
                                 Spacer()
 
+                                Text(agent.state.label)
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .foregroundStyle(stateColor(for: agent.state))
+                                    .background(
+                                        Capsule()
+                                            .fill(stateColor(for: agent.state).opacity(0.16))
+                                    )
+
                                 Picker("", selection: stateBinding(for: agent.id)) {
                                     ForEach(AgentState.allCases) { state in
                                         Text(state.label).tag(state)
                                     }
                                 }
                                 .frame(width: 120)
+
+                                Button(agent.state == .needsInput ? "Mark Running" : "Needs Input") {
+                                    viewModel.setAgentState(agent.state == .needsInput ? .running : .needsInput, for: agent.id)
+                                }
+                                .controlSize(.small)
 
                                 Button("Focus") {
                                     viewModel.focusAgent(agent.id)
@@ -223,7 +261,7 @@ struct DispatchMenuView: View {
                             .padding(7)
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.gray.opacity(0.08))
+                                    .fill(stateBackground(for: agent.state))
                             )
                         }
                     }
@@ -366,6 +404,32 @@ struct DispatchMenuView: View {
 
     private func color(for tone: AgentTone) -> Color {
         Color(hex: tone.hex)
+    }
+
+    private func stateColor(for state: AgentState) -> Color {
+        switch state {
+        case .running:
+            return Color(hex: "#22C55E")
+        case .needsInput:
+            return Color(hex: "#F59E0B")
+        case .blocked:
+            return Color(hex: "#EF4444")
+        case .done:
+            return Color(hex: "#60A5FA")
+        }
+    }
+
+    private func stateBackground(for state: AgentState) -> Color {
+        switch state {
+        case .running:
+            return Color(hex: "#22C55E").opacity(0.09)
+        case .needsInput:
+            return Color(hex: "#F59E0B").opacity(0.12)
+        case .blocked:
+            return Color(hex: "#EF4444").opacity(0.12)
+        case .done:
+            return Color(hex: "#60A5FA").opacity(0.10)
+        }
     }
 
     private var totalCountBinding: Binding<Int> {

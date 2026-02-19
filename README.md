@@ -25,6 +25,7 @@ Dispatch is a macOS menu bar mission control for multi-agent development session
 - Includes a live display preview while selecting screens.
 - Shows live monitor thumbnails and current terminal window layout in the screen selector.
 - Includes an active terminals board with focus + state controls.
+- Highlights attention-needed terminals and supports quick `Focus Next Alert` navigation.
 - Includes a visual layout picker (`Adaptive`, `Balanced`, `Wide`, `Dense`).
 - Automatically detects and tracks existing terminal windows not launched by Dispatch.
 - Saves presets, relaunches last session, and closes only Dispatch-owned windows.

@@ -56,6 +56,10 @@ final class DispatchViewModel: ObservableObject {
         launchRows.map(\.count).reduce(0, +)
     }
 
+    var needsAttentionAgents: [AgentWindow] {
+        activeAgents.filter { $0.state == .needsInput || $0.state == .blocked }
+    }
+
     func addTerminal() {
         let defaultTool = tools.first?.id ?? "claude"
         launchRows.append(LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: 1))
@@ -241,6 +245,27 @@ final class DispatchViewModel: ObservableObject {
 
         store.saveActiveSession(session)
         refreshActiveAgents()
+    }
+
+    func focusNextAttention() {
+        let queue = needsAttentionAgents
+        guard !queue.isEmpty else {
+            setStatus("No terminals currently need attention.", level: .info)
+            return
+        }
+
+        let sorted = queue.sorted { lhs, rhs in
+            if lhs.state != rhs.state {
+                return lhs.state == .needsInput
+            }
+            let leftDate = lhs.lastFocusedAt ?? lhs.launchedAt
+            let rightDate = rhs.lastFocusedAt ?? rhs.launchedAt
+            return leftDate < rightDate
+        }
+
+        if let target = sorted.first {
+            focusAgent(target.id)
+        }
     }
 
     private func launch(request: LaunchRequest) {
