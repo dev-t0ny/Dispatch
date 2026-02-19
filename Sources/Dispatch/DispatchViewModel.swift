@@ -198,6 +198,35 @@ final class DispatchViewModel: ObservableObject {
         }
     }
 
+    func attachExistingWindows() {
+        let existingSession = store.loadActiveSession()
+        let excludedIDs = Set(existingSession?.windowIDs ?? [])
+
+        do {
+            let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: excludedIDs)
+            guard !imported.isEmpty else {
+                setStatus("No additional \(selectedTerminal.label) windows found.", level: .info)
+                return
+            }
+
+            var session: ActiveSession
+            if let existingSession, existingSession.request.terminal == selectedTerminal {
+                session = existingSession
+                session.agentWindows.append(contentsOf: imported)
+            } else {
+                let request = currentRequest()
+                session = ActiveSession(agentWindows: imported, request: request)
+            }
+
+            var seenWindowIDs: Set<Int> = []
+            session.agentWindows = session.agentWindows.filter { seenWindowIDs.insert($0.windowID).inserted }
+            store.saveActiveSession(session)
+            setStatus("Attached \(imported.count) existing \(selectedTerminal.label) windows.", level: .success)
+        } catch {
+            setStatus(error.localizedDescription, level: .error)
+        }
+    }
+
     private func launch(request: LaunchRequest) {
         let screens = resolvedScreens(for: request)
         guard !screens.isEmpty else {

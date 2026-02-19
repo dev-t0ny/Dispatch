@@ -36,26 +36,39 @@ final class LaunchService {
             throw DispatchError.system("\(request.terminal.label) is not installed.")
         }
 
-        let validLaunchItems = try validatedLaunchItems(from: request.launchItems)
+        let plans = try validatedLaunchPlans(from: request.launchItems)
+        var agents: [AgentWindow] = []
 
-        var windowIDs: [Int] = []
+        for plan in plans {
+            let launchCommand = makeLaunchCommand(directory: plan.directory, toolCommand: plan.tool.command)
+            let windowID = try controller.launchWindow(command: launchCommand)
 
-        for item in validLaunchItems {
-            let launchCommand = makeLaunchCommand(directory: item.directory, toolCommand: item.tool.command)
-            let count = item.count
-            for _ in 0..<count {
-                let windowID = try controller.launchWindow(command: launchCommand)
-                windowIDs.append(windowID)
-                usleep(90_000)
-            }
+            let agent = AgentWindow(
+                id: UUID(),
+                windowID: windowID,
+                toolID: plan.tool.id,
+                directory: plan.directory,
+                name: plan.name,
+                role: plan.role,
+                objective: plan.objective,
+                tone: plan.tone,
+                slot: plan.slot,
+                launchedAt: Date(),
+                state: .running,
+                lastFocusedAt: nil
+            )
+
+            try controller.applyIdentity(windowID: agent.windowID, title: agent.title, badge: agent.badge, tone: agent.tone)
+            agents.append(agent)
+            usleep(80_000)
         }
 
-        let targetBounds = tiler.bounds(for: request.totalCount, layout: request.layout, screens: screens)
-        for (windowID, bounds) in zip(windowIDs, targetBounds) {
-            try controller.setBounds(windowID: windowID, bounds: bounds)
+        let targetBounds = tiler.bounds(for: agents.count, layout: request.layout, screens: screens)
+        for (agent, bounds) in zip(agents, targetBounds) {
+            try controller.setBounds(windowID: agent.windowID, bounds: bounds)
         }
 
-        return ActiveSession(windowIDs: windowIDs, request: request, launchedAt: Date())
+        return ActiveSession(agentWindows: agents, request: request)
     }
 
     func close(session: ActiveSession) throws {
@@ -63,13 +76,66 @@ final class LaunchService {
             throw DispatchError.system("No launcher configured for \(session.request.terminal.label).")
         }
 
-        for windowID in session.windowIDs {
-            try controller.closeWindow(windowID: windowID)
+        for agent in session.agentWindows {
+            try controller.closeWindow(windowID: agent.windowID)
         }
     }
 
-    private func validatedLaunchItems(from items: [LaunchItem]) throws -> [(tool: ToolDefinition, directory: String, count: Int)] {
-        var resolved: [(tool: ToolDefinition, directory: String, count: Int)] = []
+    func focus(windowID: Int, terminal: TerminalApp) throws {
+        guard let controller = controllers[terminal] else {
+            throw DispatchError.system("No launcher configured for \(terminal.label).")
+        }
+        try controller.focusWindow(windowID: windowID)
+    }
+
+    func applyIdentity(agent: AgentWindow, terminal: TerminalApp) throws {
+        guard let controller = controllers[terminal] else {
+            throw DispatchError.system("No launcher configured for \(terminal.label).")
+        }
+        try controller.applyIdentity(windowID: agent.windowID, title: agent.title, badge: agent.badge, tone: agent.tone)
+    }
+
+    func importExistingWindows(for terminal: TerminalApp, excluding windowIDs: Set<Int>) throws -> [AgentWindow] {
+        guard let controller = controllers[terminal] else {
+            throw DispatchError.system("No launcher configured for \(terminal.label).")
+        }
+
+        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: terminal.bundleIdentifier) != nil else {
+            throw DispatchError.system("\(terminal.label) is not installed.")
+        }
+
+        let existing = try controller.listWindowIDs().filter { !windowIDs.contains($0) }
+        let now = Date()
+        return existing.enumerated().map { index, windowID in
+            AgentWindow(
+                id: UUID(),
+                windowID: windowID,
+                toolID: "external",
+                directory: "",
+                name: "External \(terminal.label) \(index + 1)",
+                role: "Attached",
+                objective: "Manual terminal",
+                tone: .slate,
+                slot: nil,
+                launchedAt: now,
+                state: .running,
+                lastFocusedAt: nil
+            )
+        }
+    }
+
+    private struct LaunchPlan {
+        let tool: ToolDefinition
+        let directory: String
+        let name: String
+        let role: String
+        let objective: String
+        let tone: AgentTone
+        let slot: Int?
+    }
+
+    private func validatedLaunchPlans(from items: [LaunchItem]) throws -> [LaunchPlan] {
+        var plans: [LaunchPlan] = []
 
         for item in items where item.count > 0 {
             guard let tool = tools.first(where: { $0.id == item.toolID }) else {
@@ -87,14 +153,28 @@ final class LaunchService {
                 throw DispatchError.validation("Tool '\(executable)' is not in PATH.")
             }
 
-            resolved.append((tool: tool, directory: expandedDirectory, count: item.count))
+            for instance in 0..<item.count {
+                let indexedName = item.count > 1 ? "\(item.agentName) \(instance + 1)" : item.agentName
+                let slot = item.startSlot.map { $0 + instance }
+                plans.append(
+                    LaunchPlan(
+                        tool: tool,
+                        directory: expandedDirectory,
+                        name: indexedName,
+                        role: item.role,
+                        objective: item.objective,
+                        tone: item.tone,
+                        slot: slot
+                    )
+                )
+            }
         }
 
-        if resolved.isEmpty {
+        if plans.isEmpty {
             throw DispatchError.validation("Pick at least one tool instance.")
         }
 
-        return resolved
+        return plans
     }
 
     private func makeLaunchCommand(directory: String, toolCommand: String) -> String {

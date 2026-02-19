@@ -22,7 +22,9 @@ Dispatch is a macOS menu bar mission control for multi-agent development session
 - Supports per-terminal directories in the same launch plan.
 - Supports multiple terminal apps: `iTerm2` and `Terminal`.
 - Lets you target specific displays for tiling.
+- Includes a live display preview while selecting screens.
 - Includes a visual layout picker (`Adaptive`, `Balanced`, `Wide`, `Dense`).
+- Can attach existing terminal windows not launched by Dispatch.
 - Saves presets, relaunches last session, and closes only Dispatch-owned windows.
 
 ## Quick Start

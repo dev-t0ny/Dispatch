@@ -5,6 +5,9 @@ protocol TerminalControlling {
     func launchWindow(command: String) throws -> Int
     func setBounds(windowID: Int, bounds: WindowBounds) throws
     func closeWindow(windowID: Int) throws
+    func focusWindow(windowID: Int) throws
+    func listWindowIDs() throws -> [Int]
+    func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws
 }
 
 struct AppleScriptRunner {
@@ -39,5 +42,39 @@ struct AppleScriptRunner {
         }
 
         throw DispatchError.system("Unable to parse terminal window ID.")
+    }
+
+    func intArrayValue(from descriptor: NSAppleEventDescriptor?) throws -> [Int] {
+        guard let descriptor else {
+            return []
+        }
+
+        if descriptor.descriptorType == typeAEList {
+            var values: [Int] = []
+            let count = descriptor.numberOfItems
+            if count > 0 {
+                for index in 1...count {
+                    let item = descriptor.atIndex(index)
+                    if let item {
+                        if item.descriptorType == typeSInt32 {
+                            values.append(Int(item.int32Value))
+                        } else if let text = item.stringValue, let value = Int(text) {
+                            values.append(value)
+                        }
+                    }
+                }
+            }
+            return values
+        }
+
+        if descriptor.descriptorType == typeSInt32 {
+            return [Int(descriptor.int32Value)]
+        }
+
+        if let text = descriptor.stringValue, let value = Int(text) {
+            return [value]
+        }
+
+        return []
     }
 }

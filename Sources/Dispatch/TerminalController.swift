@@ -42,4 +42,45 @@ final class TerminalController: TerminalControlling {
 
         _ = try runner.run(script)
     }
+
+    func focusWindow(windowID: Int) throws {
+        let script = """
+        tell application \"Terminal\"
+            activate
+            if exists (window id \(windowID)) then
+                set index of window id \(windowID) to 1
+            end if
+        end tell
+        """
+
+        _ = try runner.run(script)
+    }
+
+    func listWindowIDs() throws -> [Int] {
+        let script = """
+        tell application \"Terminal\"
+            return id of every window
+        end tell
+        """
+
+        return try runner.intArrayValue(from: runner.run(script))
+    }
+
+    func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws {
+        let decoratedTitle = "[\(tone.label)] \(title)"
+        let titleCommand = "printf '\\e]0;\(Shell.shellEscapeForDoubleQuotes(decoratedTitle))\\a'"
+        let escapedCommand = Shell.appleScriptEscape(titleCommand)
+        let escapedBadge = Shell.appleScriptEscape(badge)
+
+        let script = """
+        tell application \"Terminal\"
+            if exists (window id \(windowID)) then
+                do script \"\(escapedCommand)\" in window id \(windowID)
+                do script \"printf '\\n[Dispatch] \(escapedBadge)\\n'\" in window id \(windowID)
+            end if
+        end tell
+        """
+
+        _ = try runner.run(script)
+    }
 }

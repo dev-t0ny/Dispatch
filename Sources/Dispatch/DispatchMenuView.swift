@@ -133,6 +133,8 @@ struct DispatchMenuView: View {
                 ScreenSelectionMap(
                     screens: viewModel.availableScreens,
                     selectedIDs: viewModel.selectedScreenIDs,
+                    totalWindows: viewModel.totalInstances,
+                    layout: viewModel.layout,
                     onToggle: { screenID in
                         viewModel.toggleScreen(screenID)
                     },
@@ -142,7 +144,7 @@ struct DispatchMenuView: View {
                 )
                 .frame(height: 140)
 
-                Text("Click to toggle a display. Drag across displays to select a group.")
+                Text("Click to toggle a display. Drag to select a group. Preview updates live.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -189,6 +191,10 @@ struct DispatchMenuView: View {
 
             Button("Close Launched") {
                 viewModel.closeLaunched()
+            }
+
+            Button("Attach Existing") {
+                viewModel.attachExistingWindows()
             }
         }
     }
@@ -328,6 +334,8 @@ struct DispatchMenuView: View {
 private struct ScreenSelectionMap: View {
     let screens: [DisplayTarget]
     let selectedIDs: Set<String>
+    let totalWindows: Int
+    let layout: LayoutPreset
     let onToggle: (String) -> Void
     let onSetSelection: (Set<String>) -> Void
 
@@ -363,10 +371,29 @@ private struct ScreenSelectionMap: View {
                                     }
                                     .padding(4)
                                 }
+                                .overlay(alignment: .topLeading) {
+                                    if let allocated = allocationMap[screen.id], allocated > 0 {
+                                        Text("\(allocated)")
+                                            .font(.caption2.weight(.semibold))
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 2)
+                                            .background(.thinMaterial, in: Capsule())
+                                            .padding(5)
+                                    }
+                                }
                         }
                         .buttonStyle(.plain)
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
+                    }
+                }
+
+                if totalWindows > 0 {
+                    ForEach(previewCells(screenRects: screenRects), id: \.id) { cell in
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.accentColor.opacity(0.38))
+                            .frame(width: cell.rect.width, height: cell.rect.height)
+                            .position(x: cell.rect.midX, y: cell.rect.midY)
                     }
                 }
 
@@ -414,6 +441,97 @@ private struct ScreenSelectionMap: View {
                     }
             )
         }
+    }
+
+    private struct PreviewCell {
+        let id: String
+        let rect: CGRect
+    }
+
+    private var selectedScreens: [DisplayTarget] {
+        let chosen = screens.filter { selectedIDs.contains($0.id) }
+        return chosen.isEmpty ? screens : chosen
+    }
+
+    private var allocationMap: [String: Int] {
+        guard totalWindows > 0 else { return [:] }
+        let targets = selectedScreens
+        guard !targets.isEmpty else { return [:] }
+
+        let areas = targets.map { max(1, $0.geometry.visibleFrame.width * $0.geometry.visibleFrame.height) }
+        let areaSum = max(1, areas.reduce(0, +))
+
+        var allocations = Array(repeating: 0, count: targets.count)
+        var fractions: [(index: Int, fraction: Double)] = []
+        var assigned = 0
+
+        for index in targets.indices {
+            let exact = (areas[index] / areaSum) * Double(totalWindows)
+            let whole = Int(floor(exact))
+            allocations[index] = whole
+            assigned += whole
+            fractions.append((index: index, fraction: exact - Double(whole)))
+        }
+
+        var remaining = totalWindows - assigned
+        for fraction in fractions.sorted(by: { $0.fraction > $1.fraction }) where remaining > 0 {
+            allocations[fraction.index] += 1
+            remaining -= 1
+        }
+
+        var output: [String: Int] = [:]
+        for (screen, count) in zip(targets, allocations) {
+            output[screen.id] = count
+        }
+        return output
+    }
+
+    private func previewCells(screenRects: [String: CGRect]) -> [PreviewCell] {
+        var cells: [PreviewCell] = []
+        for screen in selectedScreens {
+            guard let container = screenRects[screen.id] else { continue }
+            let count = allocationMap[screen.id] ?? 0
+            guard count > 0 else { continue }
+
+            let (rows, cols) = previewGridDimensions(count: count, size: screen.geometry.visibleFrame.size)
+            let inset: CGFloat = 8
+            let gap: CGFloat = 2
+            let inner = container.insetBy(dx: inset, dy: inset)
+            let cellWidth = max(2, (inner.width - CGFloat(cols - 1) * gap) / CGFloat(cols))
+            let cellHeight = max(2, (inner.height - CGFloat(rows - 1) * gap) / CGFloat(rows))
+
+            for index in 0..<count {
+                let row = index / cols
+                let col = index % cols
+                let x = inner.minX + CGFloat(col) * (cellWidth + gap)
+                let y = inner.minY + CGFloat(row) * (cellHeight + gap)
+                let rect = CGRect(x: x, y: y, width: cellWidth, height: cellHeight)
+                cells.append(PreviewCell(id: "\(screen.id)-\(index)", rect: rect))
+            }
+        }
+        return cells
+    }
+
+    private func previewGridDimensions(count: Int, size: CGSize) -> (Int, Int) {
+        switch layout {
+        case .adaptive:
+            let aspect = max(0.5, size.width / max(size.height, 1))
+            let cols = max(1, Int(ceil(sqrt(Double(count) * aspect))))
+            let rows = Int(ceil(Double(count) / Double(cols)))
+            return (rows, cols)
+        case .balanced:
+            return fitted(cols: 2, count: count)
+        case .wide:
+            return fitted(cols: 3, count: count)
+        case .dense:
+            return fitted(cols: 4, count: count)
+        }
+    }
+
+    private func fitted(cols: Int, count: Int) -> (Int, Int) {
+        let adjustedCols = max(1, cols)
+        let rows = max(1, Int(ceil(Double(count) / Double(adjustedCols))))
+        return (rows, adjustedCols)
     }
 
     private var dragRect: CGRect? {
