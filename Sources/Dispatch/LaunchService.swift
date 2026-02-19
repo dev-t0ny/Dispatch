@@ -249,20 +249,25 @@ final class LaunchService {
         let commandB64 = Data(toolCommand.utf8).base64EncodedString()
         let exportLine = "export DISPATCH_SESSION_ID=\(Shell.singleQuote(sessionID)) DISPATCH_AGENT_ID=\(Shell.singleQuote(agentID)) DISPATCH_TOOL=\(Shell.singleQuote(toolID)) DISPATCH_TOOL_COMMAND_B64=\(Shell.singleQuote(commandB64))"
 
-        let execLine: String
+        let commandLine: String
         if let wrapperPath {
             let escapedWrapper = Shell.singleQuote(wrapperPath)
-            execLine = "exec \(escapedWrapper) --tool \(Shell.singleQuote(toolID)) --session-id \(Shell.singleQuote(sessionID)) --agent-id \(Shell.singleQuote(agentID))"
+            commandLine = "\(escapedWrapper) --tool \(Shell.singleQuote(toolID)) --session-id \(Shell.singleQuote(sessionID)) --agent-id \(Shell.singleQuote(agentID))"
         } else {
-            execLine = "exec \(toolCommand)"
+            commandLine = toolCommand
         }
 
         let script = """
         #!/bin/zsh
-        set -e
+        set +e
         cd \(Shell.singleQuote(directory))
         \(exportLine)
-        \(execLine)
+        \(commandLine)
+        dispatch_exit_code=$?
+        if [[ $dispatch_exit_code -ne 0 ]]; then
+          print "[Dispatch] Command exited with code $dispatch_exit_code"
+        fi
+        exec /bin/zsh -l
         """
 
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
