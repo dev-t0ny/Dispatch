@@ -1,47 +1,5 @@
 import Foundation
-
-struct RuntimeEvent: Codable {
-    let sessionID: String
-    let agentID: String
-    let tool: String
-    let state: String
-    let reason: String?
-    let timestamp: String
-
-    enum CodingKeys: String, CodingKey {
-        case sessionID = "session_id"
-        case agentID = "agent_id"
-        case tool
-        case state
-        case reason
-        case timestamp
-    }
-}
-
-enum EventLog {
-    static func url() -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("Dispatch", isDirectory: true)
-            .appendingPathComponent("events.log", isDirectory: false)
-    }
-
-    static func append(_ line: String) {
-        let logURL = url()
-        let dir = logURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-
-        guard let handle = try? FileHandle(forWritingTo: logURL) else { return }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: Data((line + "\n").utf8))
-    }
-}
+import DispatchShared
 
 func usage() {
     print("dispatch-agent --tool <tool> --session-id <id> --agent-id <id> [--command <shell command>]")
@@ -64,7 +22,7 @@ func emit(sessionID: String, agentID: String, tool: String, state: String, reaso
     )
 
     guard let data = try? JSONEncoder().encode(event), let line = String(data: data, encoding: .utf8) else { return }
-    EventLog.append(line)
+    SharedEventLog.appendSilently(line)
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -91,6 +49,7 @@ guard let command = explicitCommand ?? commandFromB64, !command.isEmpty else {
 }
 
 emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "running")
+SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) dispatch-agent starting")
 
 let child = Process()
 child.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -107,7 +66,9 @@ child.environment = env
 
 do {
     try child.run()
+    SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) child started")
     child.waitUntilExit()
+    SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) child exit=\(child.terminationStatus)")
     if child.terminationStatus == 0 {
         emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "done")
     } else {
@@ -115,6 +76,7 @@ do {
     }
     exit(child.terminationStatus)
 } catch {
+    SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) child failed=\(error.localizedDescription)")
     emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "blocked", reason: error.localizedDescription)
     fputs("dispatch-agent failed: \(error.localizedDescription)\n", stderr)
     exit(1)

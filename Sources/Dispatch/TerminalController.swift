@@ -6,13 +6,15 @@ final class TerminalController: TerminalControlling {
 
     func launchWindow(command: String) throws -> Int {
         let escapedCommand = Shell.appleScriptEscape(command)
+        // Atomic launch: `do script` without `in` creates a new window and runs
+        // the command in it, returning the tab reference. We then get the window
+        // id from the containing window — no race with "front window".
         let script = """
-        tell application \"Terminal\"
+        tell application "Terminal"
             activate
-            do script \"\"
-            delay 0.08
-            do script \"\(escapedCommand)\" in front window
-            return id of front window
+            set newTab to do script "\(escapedCommand)"
+            set newWindow to window 1 of (every window whose tabs contains newTab)
+            return id of newWindow
         end tell
         """
 
@@ -21,7 +23,7 @@ final class TerminalController: TerminalControlling {
 
     func setBounds(windowID: Int, bounds: WindowBounds) throws {
         let script = """
-        tell application \"Terminal\"
+        tell application "Terminal"
             if exists (window id \(windowID)) then
                 set bounds of window id \(windowID) to {\(bounds.left), \(bounds.top), \(bounds.right), \(bounds.bottom)}
             end if
@@ -33,7 +35,7 @@ final class TerminalController: TerminalControlling {
 
     func closeWindow(windowID: Int) throws {
         let script = """
-        tell application \"Terminal\"
+        tell application "Terminal"
             if exists (window id \(windowID)) then
                 close (window id \(windowID))
             end if
@@ -45,7 +47,7 @@ final class TerminalController: TerminalControlling {
 
     func focusWindow(windowID: Int) throws {
         let script = """
-        tell application \"Terminal\"
+        tell application "Terminal"
             activate
             if exists (window id \(windowID)) then
                 set index of window id \(windowID) to 1
@@ -58,7 +60,7 @@ final class TerminalController: TerminalControlling {
 
     func listWindowSnapshots() throws -> [TerminalWindowSnapshot] {
         let script = """
-        tell application \"Terminal\"
+        tell application "Terminal"
             set snapshotRows to {}
             repeat with w in windows
                 set b to bounds of w
@@ -73,16 +75,15 @@ final class TerminalController: TerminalControlling {
     }
 
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws {
+        // Use Terminal's custom title property instead of injecting shell commands
+        // into the running session, which would corrupt interactive agent tools.
         let decoratedTitle = "[\(tone.label)] \(title)"
-        let titleCommand = "printf '\\e]0;\(Shell.shellEscapeForDoubleQuotes(decoratedTitle))\\a'"
-        let escapedCommand = Shell.appleScriptEscape(titleCommand)
-        let escapedBadge = Shell.appleScriptEscape(badge)
+        let escapedTitle = Shell.appleScriptEscape(decoratedTitle)
 
         let script = """
-        tell application \"Terminal\"
+        tell application "Terminal"
             if exists (window id \(windowID)) then
-                do script \"\(escapedCommand)\" in window id \(windowID)
-                do script \"printf '\\n[Dispatch] \(escapedBadge)\\n'\" in window id \(windowID)
+                set custom title of current tab of window id \(windowID) to "\(escapedTitle)"
             end if
         end tell
         """

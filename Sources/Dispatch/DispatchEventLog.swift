@@ -1,49 +1,66 @@
 import Foundation
+import DispatchShared
 
-struct DispatchRuntimeEvent: Codable {
-    let sessionID: String
-    let agentID: String
-    let tool: String
-    let state: String
-    let reason: String?
-    let timestamp: String
-
-    enum CodingKeys: String, CodingKey {
-        case sessionID = "session_id"
-        case agentID = "agent_id"
-        case tool
-        case state
-        case reason
-        case timestamp
-    }
-}
+/// App-internal alias so existing code referencing `DispatchRuntimeEvent` still compiles.
+typealias DispatchRuntimeEvent = RuntimeEvent
 
 enum DispatchEventLog {
     static func fileURL() -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("Dispatch", isDirectory: true)
-            .appendingPathComponent("events.log", isDirectory: false)
+        SharedEventLog.url()
     }
 
     static func ensureExists() {
-        let url = fileURL()
-        let directory = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
+        SharedEventLog.ensureDirectory()
     }
 
-    static func readLines() -> [String] {
+    /// Returns the current file size in bytes, or 0 if unreadable.
+    static func fileSize() -> UInt64 {
         ensureExists()
-        guard let data = try? Data(contentsOf: fileURL()) else { return [] }
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
-        return text
+        let path = fileURL().path
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? UInt64 else {
+            return 0
+        }
+        return size
+    }
+
+    /// Reads only the bytes from `offset` to end-of-file and returns the new
+    /// lines plus the updated byte offset. If the file was truncated (current
+    /// size < offset), resets to 0 and reads everything.
+    static func readNewLines(fromByteOffset offset: UInt64) -> (lines: [String], newOffset: UInt64) {
+        ensureExists()
+        let url = fileURL()
+
+        let currentSize = fileSize()
+        let safeOffset = currentSize < offset ? 0 : offset
+
+        guard safeOffset < currentSize else {
+            return ([], currentSize)
+        }
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return ([], safeOffset)
+        }
+        defer { try? handle.close() }
+
+        do {
+            try handle.seek(toOffset: safeOffset)
+        } catch {
+            return ([], safeOffset)
+        }
+
+        let data = handle.readDataToEndOfFile()
+        let newOffset = safeOffset + UInt64(data.count)
+
+        guard let text = String(data: data, encoding: .utf8) else {
+            return ([], newOffset)
+        }
+
+        let lines = text
             .split(whereSeparator: { $0.isNewline })
             .map(String.init)
             .filter { !$0.isEmpty }
+
+        return (lines, newOffset)
     }
 }

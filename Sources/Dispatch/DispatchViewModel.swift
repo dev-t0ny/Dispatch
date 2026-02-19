@@ -26,7 +26,7 @@ final class DispatchViewModel: ObservableObject {
     private let launchService: LaunchService
     private let store: SessionStore
     private var lastRuntimeSyncError: String?
-    private var processedEventLineCount: Int
+    private var eventLogByteOffset: UInt64
 
     init(launchService: LaunchService = LaunchService(), store: SessionStore = SessionStore()) {
         self.launchService = launchService
@@ -38,7 +38,7 @@ final class DispatchViewModel: ObservableObject {
         activeAgents = []
         liveWindowSnapshots = []
         lastRuntimeSyncError = nil
-        processedEventLineCount = 0
+        eventLogByteOffset = 0
 
         let defaultDirectory = Self.defaultDirectory()
         let defaultTool = tools.first?.id ?? "claude"
@@ -279,15 +279,27 @@ final class DispatchViewModel: ObservableObject {
             return
         }
 
-        do {
-            let session = try launchService.launch(request: request, screens: screens)
-            store.saveActiveSession(session)
-            store.saveLastLaunch(request)
-            refreshActiveAgents()
-            refreshRuntimeContext(silent: true)
-            setStatus("Launched \(request.summary(using: tools)) via \(request.terminal.label).", level: .success)
-        } catch {
-            setStatus(error.localizedDescription, level: .error)
+        setStatus("Launching...", level: .info)
+
+        // Dispatch to a background task so blocking Process calls (which,
+        // isExecutableAvailable, executablePath) don't freeze the UI.
+        let service = launchService
+        let toolsList = tools
+        Task.detached { [store] in
+            do {
+                let session = try service.launch(request: request, screens: screens)
+                await MainActor.run {
+                    store.saveActiveSession(session)
+                    store.saveLastLaunch(request)
+                    self.refreshActiveAgents()
+                    self.refreshRuntimeContext(silent: true)
+                    self.setStatus("Launched \(request.summary(using: toolsList)) via \(request.terminal.label).", level: .success)
+                }
+            } catch {
+                await MainActor.run {
+                    self.setStatus(error.localizedDescription, level: .error)
+                }
+            }
         }
     }
 
@@ -352,19 +364,15 @@ final class DispatchViewModel: ObservableObject {
     }
 
     private func primeEventCursor() {
-        processedEventLineCount = DispatchEventLog.readLines().count
+        // Skip to current end-of-file so we only process events written after launch.
+        eventLogByteOffset = DispatchEventLog.fileSize()
     }
 
     private func applyPendingRuntimeEvents() {
-        let lines = DispatchEventLog.readLines()
-        if processedEventLineCount > lines.count {
-            processedEventLineCount = 0
-        }
+        let (freshLines, newOffset) = DispatchEventLog.readNewLines(fromByteOffset: eventLogByteOffset)
+        eventLogByteOffset = newOffset
 
-        guard processedEventLineCount < lines.count else { return }
-        let freshLines = lines[processedEventLineCount...]
-        processedEventLineCount = lines.count
-
+        guard !freshLines.isEmpty else { return }
         guard var session = store.loadActiveSession() else { return }
 
         var didChange = false
@@ -412,6 +420,7 @@ final class DispatchViewModel: ObservableObject {
         let openIDs = Set(snapshots.map(\.windowID))
         let session = store.loadActiveSession()
 
+        // Case 1: Active session matches the selected terminal — reconcile windows.
         if var existing = session, existing.request.terminal == selectedTerminal {
             existing.agentWindows.removeAll(where: { !openIDs.contains($0.windowID) })
 
@@ -433,23 +442,21 @@ final class DispatchViewModel: ObservableObject {
             return
         }
 
-        if let existing = session, existing.request.terminal != selectedTerminal {
+        // Case 2: Active session exists for a *different* terminal. Show
+        // detected windows for the selected terminal in the UI without
+        // overwriting the persisted session (which preserves agent IDs,
+        // state tracking, and event log correlation for the real launch).
+        if session != nil, session?.request.terminal != selectedTerminal {
             let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: [])
-            if imported.isEmpty {
-                refreshActiveAgents()
-                return
-            }
-
-            let request = LaunchRequest(terminal: selectedTerminal, layout: layout, launchItems: [], screenIDs: [])
-            store.saveActiveSession(ActiveSession(agentWindows: imported, request: request))
-            refreshActiveAgents()
-
-            if !silent {
-                setStatus("Switched tracking to \(selectedTerminal.label) with \(imported.count) detected windows.", level: .info)
+            // Show these in the UI only — do NOT call store.saveActiveSession.
+            activeAgents = imported
+            if !silent && !imported.isEmpty {
+                setStatus("Showing \(imported.count) detected \(selectedTerminal.label) windows. Switch back to \(session!.request.terminal.label) to manage your launched session.", level: .info)
             }
             return
         }
 
+        // Case 3: No active session at all — auto-import what we find.
         let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: [])
         guard !imported.isEmpty else {
             refreshActiveAgents()

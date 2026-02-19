@@ -14,16 +14,23 @@ let package = Package(
         .executable(name: "dispatch-agent", targets: ["DispatchAgent"])
     ],
     targets: [
+        .target(
+            name: "DispatchShared",
+            path: "Sources/DispatchShared"
+        ),
         .executableTarget(
             name: "DispatchLauncher",
+            dependencies: ["DispatchShared"],
             path: "Sources/Dispatch"
         ),
         .executableTarget(
             name: "DispatchCtl",
+            dependencies: ["DispatchShared"],
             path: "Sources/DispatchCtl"
         ),
         .executableTarget(
             name: "DispatchAgent",
+            dependencies: ["DispatchShared"],
             path: "Sources/DispatchAgent"
         ),
     ]

@@ -1,6 +1,6 @@
 import Foundation
 
-final class SessionStore {
+final class SessionStore: @unchecked Sendable {
     private let defaults: UserDefaults
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()

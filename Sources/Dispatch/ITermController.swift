@@ -6,10 +6,25 @@ final class ITermController: TerminalControlling {
 
     func launchWindow(command: String) throws -> Int {
         let escapedCommand = Shell.appleScriptEscape(command)
+        // Two-step launch: create the window first, wait until the shell prompt
+        // is ready (is_at_shell_prompt), then write the command. This avoids
+        // the race where `write text` is swallowed because the session's shell
+        // hasn't finished initializing.
         let script = """
         tell application "iTerm2"
             activate
-            set newWindow to (create window with default profile command "\(escapedCommand)")
+            set newWindow to (create window with default profile)
+            tell current session of current tab of newWindow
+                set retryCount to 0
+                repeat while retryCount < 40
+                    try
+                        if is at shell prompt then exit repeat
+                    end try
+                    delay 0.05
+                    set retryCount to retryCount + 1
+                end repeat
+                write text "\(escapedCommand)"
+            end tell
             return (id of newWindow)
         end tell
         """

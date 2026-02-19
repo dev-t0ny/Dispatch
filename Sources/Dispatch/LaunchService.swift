@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-final class LaunchService {
+final class LaunchService: @unchecked Sendable {
     private let tools: [ToolDefinition]
     private let controllers: [TerminalApp: any TerminalControlling]
     private let tiler: WindowTiler
@@ -74,7 +74,7 @@ final class LaunchService {
                 // Identity decoration should never block terminal launch.
             }
             agents.append(agent)
-            usleep(80_000)
+            usleep(300_000)
         }
 
         let targetBounds = tiler.bounds(for: agents.count, layout: request.layout, screens: screens)
@@ -257,13 +257,23 @@ final class LaunchService {
             commandLine = toolCommand
         }
 
+        let supportDir = Shell.singleQuote((NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/Dispatch"))
+        let launchLogPath = Shell.singleQuote((NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/Dispatch/launch.log"))
+
+        // All dynamic values are either single-quoted or referenced through
+        // environment variables set by the export line, so shell metacharacters
+        // in directory paths, session IDs, etc. cannot break the script.
         let script = """
         #!/bin/zsh
         set +e
+        mkdir -p \(supportDir)
         cd \(Shell.singleQuote(directory))
         \(exportLine)
+        print "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] session=$DISPATCH_SESSION_ID agent=$DISPATCH_AGENT_ID tool=$DISPATCH_TOOL start cwd=$(pwd)" >> \(launchLogPath)
+        print "[Dispatch] Launching $DISPATCH_TOOL in $(pwd)"
         \(commandLine)
         dispatch_exit_code=$?
+        print "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] session=$DISPATCH_SESSION_ID agent=$DISPATCH_AGENT_ID tool=$DISPATCH_TOOL exit=$dispatch_exit_code" >> \(launchLogPath)
         if [[ $dispatch_exit_code -ne 0 ]]; then
           print "[Dispatch] Command exited with code $dispatch_exit_code"
         fi

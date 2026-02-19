@@ -1,48 +1,5 @@
 import Foundation
-
-struct RuntimeEvent: Codable {
-    let sessionID: String
-    let agentID: String
-    let tool: String
-    let state: String
-    let reason: String?
-    let timestamp: String
-
-    enum CodingKeys: String, CodingKey {
-        case sessionID = "session_id"
-        case agentID = "agent_id"
-        case tool
-        case state
-        case reason
-        case timestamp
-    }
-}
-
-enum EventLog {
-    static func url() -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("Dispatch", isDirectory: true)
-            .appendingPathComponent("events.log", isDirectory: false)
-    }
-
-    static func append(_ line: String) throws {
-        let logURL = url()
-        let dir = logURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-
-        let data = Data((line + "\n").utf8)
-        let handle = try FileHandle(forWritingTo: logURL)
-        defer { try? handle.close() }
-        try handle.seekToEnd()
-        try handle.write(contentsOf: data)
-    }
-}
+import DispatchShared
 
 func usage() {
     let text = """
@@ -101,7 +58,7 @@ do {
     guard let line = String(data: data, encoding: .utf8) else {
         throw NSError(domain: "dispatchctl", code: 1, userInfo: [NSLocalizedDescriptionKey: "Encoding failed"])
     }
-    try EventLog.append(line)
+    try SharedEventLog.append(line)
 } catch {
     fputs("Failed to write dispatch event: \(error.localizedDescription)\n", stderr)
     exit(1)
