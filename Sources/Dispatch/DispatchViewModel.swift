@@ -18,6 +18,7 @@ final class DispatchViewModel: ObservableObject {
     @Published var launchRows: [LaunchRow]
     @Published var availableScreens: [DisplayTarget]
     @Published var selectedScreenIDs: Set<String>
+    @Published var activeAgents: [AgentWindow]
 
     let tools: [ToolDefinition]
 
@@ -31,6 +32,7 @@ final class DispatchViewModel: ObservableObject {
         presets = store.loadPresets().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         availableScreens = ScreenGeometry.allDisplays()
         selectedScreenIDs = []
+        activeAgents = []
 
         let defaultDirectory = Self.defaultDirectory()
         let defaultTool = tools.first?.id ?? "claude"
@@ -41,6 +43,8 @@ final class DispatchViewModel: ObservableObject {
         if let last = store.loadLastLaunch() {
             apply(request: last)
         }
+
+        refreshActiveAgents()
     }
 
     var totalInstances: Int {
@@ -192,6 +196,7 @@ final class DispatchViewModel: ObservableObject {
         do {
             try launchService.close(session: activeSession)
             store.saveActiveSession(nil)
+            refreshActiveAgents()
             setStatus("Closed \(activeSession.windowIDs.count) Dispatch windows.", level: .success)
         } catch {
             setStatus(error.localizedDescription, level: .error)
@@ -221,10 +226,53 @@ final class DispatchViewModel: ObservableObject {
             var seenWindowIDs: Set<Int> = []
             session.agentWindows = session.agentWindows.filter { seenWindowIDs.insert($0.windowID).inserted }
             store.saveActiveSession(session)
+            refreshActiveAgents()
             setStatus("Attached \(imported.count) existing \(selectedTerminal.label) windows.", level: .success)
         } catch {
             setStatus(error.localizedDescription, level: .error)
         }
+    }
+
+    func focusAgent(_ agentID: UUID) {
+        guard var session = store.loadActiveSession() else {
+            setStatus("No active session to focus.", level: .info)
+            return
+        }
+
+        guard let index = session.agentWindows.firstIndex(where: { $0.id == agentID }) else {
+            setStatus("Agent no longer exists in session.", level: .error)
+            return
+        }
+
+        do {
+            let terminal = session.request.terminal
+            let agent = session.agentWindows[index]
+            try launchService.focus(windowID: agent.windowID, terminal: terminal)
+
+            session.agentWindows[index].lastFocusedAt = Date()
+            session.focusHistory.append(agent.id)
+            store.saveActiveSession(session)
+            refreshActiveAgents()
+        } catch {
+            setStatus(error.localizedDescription, level: .error)
+        }
+    }
+
+    func setAgentState(_ state: AgentState, for agentID: UUID) {
+        guard var session = store.loadActiveSession() else { return }
+        guard let index = session.agentWindows.firstIndex(where: { $0.id == agentID }) else { return }
+
+        session.agentWindows[index].state = state
+        let terminal = session.request.terminal
+
+        do {
+            try launchService.applyIdentity(agent: session.agentWindows[index], terminal: terminal)
+        } catch {
+            setStatus(error.localizedDescription, level: .error)
+        }
+
+        store.saveActiveSession(session)
+        refreshActiveAgents()
     }
 
     private func launch(request: LaunchRequest) {
@@ -238,6 +286,7 @@ final class DispatchViewModel: ObservableObject {
             let session = try launchService.launch(request: request, screens: screens)
             store.saveActiveSession(session)
             store.saveLastLaunch(request)
+            refreshActiveAgents()
             setStatus("Launched \(request.summary(using: tools)) via \(request.terminal.label).", level: .success)
         } catch {
             setStatus(error.localizedDescription, level: .error)
@@ -321,5 +370,10 @@ final class DispatchViewModel: ObservableObject {
 
     private func setStatus(_ text: String, level: StatusLevel) {
         status = StatusMessage(text: text, level: level)
+    }
+
+    private func refreshActiveAgents() {
+        let session = store.loadActiveSession()
+        activeAgents = session?.agentWindows ?? []
     }
 }

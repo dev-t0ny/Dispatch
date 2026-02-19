@@ -1,3 +1,5 @@
+import AppKit
+import CoreGraphics
 import SwiftUI
 
 struct DispatchMenuView: View {
@@ -16,6 +18,7 @@ struct DispatchMenuView: View {
             screenSection
             layoutSection
             controls
+            activeTerminalsSection
             presetsSection
 
             if let status = viewModel.status {
@@ -32,7 +35,7 @@ struct DispatchMenuView: View {
             }
         }
         .padding(14)
-        .frame(width: 560)
+        .frame(width: 620)
     }
 
     private var header: some View {
@@ -142,40 +145,13 @@ struct DispatchMenuView: View {
                         viewModel.setSelectedScreens(selectedIDs)
                     }
                 )
-                .frame(height: 140)
+                .frame(height: 180)
 
-                Text("Click to toggle a display. Drag to select a group. Preview updates live.")
+                Text("Click to toggle a display. Drag to select a group. Layout and monitor preview update live.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 6)], spacing: 6) {
-                    ForEach(viewModel.availableScreens) { screen in
-                        screenPill(screen)
-                    }
-                }
             }
         }
-    }
-
-    private func screenPill(_ screen: DisplayTarget) -> some View {
-        Button {
-            viewModel.toggleScreen(screen.id)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: viewModel.isScreenSelected(screen.id) ? "checkmark.circle.fill" : "circle")
-                Text(screen.name)
-                    .lineLimit(1)
-            }
-            .font(.caption)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Capsule()
-                    .fill(viewModel.isScreenSelected(screen.id) ? Color.accentColor.opacity(0.18) : Color.gray.opacity(0.12))
-            )
-        }
-        .buttonStyle(.plain)
     }
 
     private var controls: some View {
@@ -195,6 +171,66 @@ struct DispatchMenuView: View {
 
             Button("Attach Existing") {
                 viewModel.attachExistingWindows()
+            }
+        }
+    }
+
+    private var activeTerminalsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Active Terminals")
+                    .font(.headline)
+                Spacer()
+                Text("\(viewModel.activeAgents.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if viewModel.activeAgents.isEmpty {
+                Text("No tracked terminals yet. Launch or use Attach Existing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(spacing: 6) {
+                        ForEach(viewModel.activeAgents) { agent in
+                            HStack(spacing: 8) {
+                                Circle()
+                                    .fill(color(for: agent.tone))
+                                    .frame(width: 9, height: 9)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(agent.title)
+                                        .font(.caption.weight(.semibold))
+                                        .lineLimit(1)
+                                    Text(agent.objective.isEmpty ? "No objective" : agent.objective)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer()
+
+                                Picker("", selection: stateBinding(for: agent.id)) {
+                                    ForEach(AgentState.allCases) { state in
+                                        Text(state.label).tag(state)
+                                    }
+                                }
+                                .frame(width: 120)
+
+                                Button("Focus") {
+                                    viewModel.focusAgent(agent.id)
+                                }
+                            }
+                            .padding(7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.gray.opacity(0.08))
+                            )
+                        }
+                    }
+                }
+                .frame(maxHeight: 170)
             }
         }
     }
@@ -308,6 +344,17 @@ struct DispatchMenuView: View {
         )
     }
 
+    private func stateBinding(for agentID: UUID) -> Binding<AgentState> {
+        Binding(
+            get: {
+                viewModel.activeAgents.first(where: { $0.id == agentID })?.state ?? .running
+            },
+            set: { value in
+                viewModel.setAgentState(value, for: agentID)
+            }
+        )
+    }
+
     private func color(for level: StatusLevel) -> Color {
         switch level {
         case .info:
@@ -317,6 +364,10 @@ struct DispatchMenuView: View {
         case .error:
             return .red
         }
+    }
+
+    private func color(for tone: AgentTone) -> Color {
+        Color(hex: tone.hex)
     }
 
     private var totalCountBinding: Binding<Int> {
@@ -331,6 +382,18 @@ struct DispatchMenuView: View {
     }
 }
 
+private extension Color {
+    init(hex: String) {
+        let value = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: value).scanHexInt64(&int)
+        let r = Double((int >> 16) & 0xFF) / 255
+        let g = Double((int >> 8) & 0xFF) / 255
+        let b = Double(int & 0xFF) / 255
+        self.init(red: r, green: g, blue: b)
+    }
+}
+
 private struct ScreenSelectionMap: View {
     let screens: [DisplayTarget]
     let selectedIDs: Set<String>
@@ -339,8 +402,11 @@ private struct ScreenSelectionMap: View {
     let onToggle: (String) -> Void
     let onSetSelection: (Set<String>) -> Void
 
+    private let refreshTimer = Timer.publish(every: 1.25, on: .main, in: .common).autoconnect()
+
     @State private var dragStart: CGPoint?
     @State private var dragCurrent: CGPoint?
+    @State private var snapshots: [String: NSImage] = [:]
 
     var body: some View {
         GeometryReader { proxy in
@@ -355,32 +421,47 @@ private struct ScreenSelectionMap: View {
                         Button {
                             onToggle(screen.id)
                         } label: {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(selectedIDs.contains(screen.id) ? Color.accentColor.opacity(0.24) : Color.gray.opacity(0.2))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(selectedIDs.contains(screen.id) ? Color.accentColor : Color.gray.opacity(0.35), lineWidth: 1)
-                                )
-                                .overlay {
-                                    VStack(spacing: 2) {
-                                        Text("Display \(index + 1)")
-                                            .font(.caption2.weight(.semibold))
-                                        Text(sizeLabel(screen))
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .padding(4)
+                            ZStack {
+                                if let snapshot = snapshots[screen.id] {
+                                    Image(nsImage: snapshot)
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    LinearGradient(
+                                        colors: [Color.gray.opacity(0.28), Color.gray.opacity(0.16)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
                                 }
-                                .overlay(alignment: .topLeading) {
-                                    if let allocated = allocationMap[screen.id], allocated > 0 {
-                                        Text("\(allocated)")
-                                            .font(.caption2.weight(.semibold))
-                                            .padding(.horizontal, 5)
-                                            .padding(.vertical, 2)
-                                            .background(.thinMaterial, in: Capsule())
-                                            .padding(5)
-                                    }
+
+                                Rectangle()
+                                    .fill(selectedIDs.contains(screen.id) ? Color.accentColor.opacity(0.24) : Color.black.opacity(0.30))
+
+                                VStack(spacing: 2) {
+                                    Text("Display \(index + 1)")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                    Text(sizeLabel(screen))
+                                        .font(.caption2)
+                                        .foregroundStyle(.white.opacity(0.85))
                                 }
+                                .padding(4)
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(selectedIDs.contains(screen.id) ? Color.accentColor : Color.white.opacity(0.55), lineWidth: 1)
+                            )
+                            .overlay(alignment: .topLeading) {
+                                if let allocated = allocationMap[screen.id], allocated > 0 {
+                                    Text("\(allocated)")
+                                        .font(.caption2.weight(.semibold))
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(.thinMaterial, in: Capsule())
+                                        .padding(5)
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
                         .frame(width: rect.width, height: rect.height)
@@ -440,6 +521,15 @@ private struct ScreenSelectionMap: View {
                         }
                     }
             )
+            .onAppear {
+                refreshSnapshots()
+            }
+            .onChange(of: screens) { _ in
+                refreshSnapshots()
+            }
+            .onReceive(refreshTimer) { _ in
+                refreshSnapshots()
+            }
         }
     }
 
@@ -532,6 +622,19 @@ private struct ScreenSelectionMap: View {
         let adjustedCols = max(1, cols)
         let rows = max(1, Int(ceil(Double(count) / Double(adjustedCols))))
         return (rows, adjustedCols)
+    }
+
+    private func refreshSnapshots() {
+        var updated: [String: NSImage] = [:]
+
+        for screen in screens {
+            guard let displayID = screen.cgDisplayID else { continue }
+            guard let cgImage = CGDisplayCreateImage(displayID) else { continue }
+            let size = NSSize(width: cgImage.width, height: cgImage.height)
+            updated[screen.id] = NSImage(cgImage: cgImage, size: size)
+        }
+
+        snapshots = updated
     }
 
     private var dragRect: CGRect? {

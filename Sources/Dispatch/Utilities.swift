@@ -5,6 +5,11 @@ struct DisplayTarget: Identifiable, Hashable {
     let id: String
     let name: String
     let geometry: ScreenGeometry
+
+    var cgDisplayID: CGDirectDisplayID? {
+        guard let value = UInt32(id) else { return nil }
+        return CGDirectDisplayID(value)
+    }
 }
 
 struct ScreenGeometry: Hashable {
