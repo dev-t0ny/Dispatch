@@ -102,4 +102,35 @@ struct AppleScriptRunner {
 
         return []
     }
+
+    func windowSnapshotsValue(from descriptor: NSAppleEventDescriptor?) -> [TerminalWindowSnapshot] {
+        guard let descriptor else {
+            return []
+        }
+
+        guard descriptor.descriptorType == typeAEList else {
+            return []
+        }
+
+        var snapshots: [TerminalWindowSnapshot] = []
+        let count = descriptor.numberOfItems
+        guard count > 0 else { return [] }
+
+        for index in 1...count {
+            guard let row = descriptor.atIndex(index), row.descriptorType == typeAEList else { continue }
+            let values = (try? intArrayValue(from: row)) ?? []
+            guard values.count >= 5 else { continue }
+
+            let snapshot = TerminalWindowSnapshot(
+                windowID: values[0],
+                left: values[1],
+                top: values[2],
+                right: values[3],
+                bottom: values[4]
+            )
+            snapshots.append(snapshot)
+        }
+
+        return snapshots
+    }
 }
