@@ -424,25 +424,32 @@ final class DispatchViewModel: ObservableObject {
         }
     }
 
-    /// Scan running agents for prompt patterns and auto-transition to needsInput.
+    /// Scan running agents via TTY process monitoring and auto-transition to needsInput
+    /// when the tool appears idle, or back to running when it resumes work.
     private func scanForPrompts() {
         guard var session = store.loadActiveSession() else { return }
         let terminal = session.request.terminal
 
-        let detected = launchService.detectAttentionNeeded(
+        let idleAgentIDs = launchService.detectIdleAgents(
             agents: session.agentWindows,
             terminal: terminal
         )
 
-        guard !detected.isEmpty else { return }
-
         var didChange = false
-        for agentID in detected {
-            guard let index = session.agentWindows.firstIndex(where: { $0.id == agentID }) else { continue }
-            guard session.agentWindows[index].state == .running else { continue }
 
-            session.agentWindows[index].state = .needsInput
-            didChange = true
+        for index in session.agentWindows.indices {
+            let agent = session.agentWindows[index]
+            let isIdle = idleAgentIDs.contains(agent.id)
+
+            if isIdle && agent.state == .running {
+                // Tool is idle → needs input.
+                session.agentWindows[index].state = .needsInput
+                didChange = true
+            } else if !isIdle && agent.state == .needsInput {
+                // Tool resumed work → back to running (auto-dismiss).
+                session.agentWindows[index].state = .running
+                didChange = true
+            }
         }
 
         if didChange {

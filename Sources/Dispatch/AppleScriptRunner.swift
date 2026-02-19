@@ -10,6 +10,9 @@ protocol TerminalControlling {
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws
     /// Read the last N lines of visible text from the terminal session in the given window.
     func readSessionContent(windowID: Int, lineCount: Int) throws -> String
+    /// Check which window IDs have sessions that appear idle / waiting for input.
+    /// Returns the set of window IDs where the session is at a shell prompt or idle.
+    func detectIdleWindowIDs(among windowIDs: [Int]) throws -> Set<Int>
 }
 
 struct AppleScriptRunner {

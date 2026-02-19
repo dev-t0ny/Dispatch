@@ -115,19 +115,31 @@ final class LaunchService: @unchecked Sendable {
         return try? controller.readSessionContent(windowID: windowID, lineCount: lineCount)
     }
 
-    /// Scan all agents in a session for prompt patterns. Returns the set of
-    /// agent IDs whose terminal content indicates they're waiting for input.
-    func detectAttentionNeeded(agents: [AgentWindow], terminal: TerminalApp) -> Set<UUID> {
-        var needsInput: Set<UUID> = []
-        for agent in agents where agent.state == .running {
-            guard let content = readSessionContent(windowID: agent.windowID, terminal: terminal, lineCount: 20) else {
-                continue
-            }
-            if PromptDetector.detectsPrompt(in: content, toolID: agent.toolID) {
-                needsInput.insert(agent.id)
-            }
+    /// Detect which running agents are idle / waiting for input using the
+    /// terminal's native API (e.g. iTerm2 shell integration).
+    /// Returns the set of agent IDs whose sessions appear idle.
+    func detectIdleAgents(agents: [AgentWindow], terminal: TerminalApp) -> Set<UUID> {
+        guard let controller = controllers[terminal] else { return [] }
+
+        let runningAgents = agents.filter { $0.state == .running }
+        guard !runningAgents.isEmpty else { return [] }
+
+        let windowIDs = runningAgents.map(\.windowID)
+        let idleWindowIDs: Set<Int>
+        do {
+            idleWindowIDs = try controller.detectIdleWindowIDs(among: windowIDs)
+        } catch {
+            return []
         }
-        return needsInput
+
+        guard !idleWindowIDs.isEmpty else { return [] }
+
+        // Map idle window IDs back to agent UUIDs.
+        var result: Set<UUID> = []
+        for agent in runningAgents where idleWindowIDs.contains(agent.windowID) {
+            result.insert(agent.id)
+        }
+        return result
     }
 
     func importExistingWindows(for terminal: TerminalApp, excluding windowIDs: Set<Int>) throws -> [AgentWindow] {

@@ -94,6 +94,58 @@ final class TerminalController: TerminalControlling {
         return tail.joined(separator: "\n")
     }
 
+    func detectIdleWindowIDs(among windowIDs: [Int]) throws -> Set<Int> {
+        guard !windowIDs.isEmpty else { return [] }
+
+        // Get TTY for each window via AppleScript.
+        let ttyMap = try getWindowTTYs(windowIDs: windowIDs)
+        guard !ttyMap.isEmpty else { return [] }
+
+        let stringMap = Dictionary(uniqueKeysWithValues: ttyMap.map { (String($0.key), $0.value) })
+        let idleKeys = TTYMonitor.detectIdle(ttys: stringMap)
+        return Set(idleKeys.compactMap { Int($0) })
+    }
+
+    private func getWindowTTYs(windowIDs: [Int]) throws -> [Int: String] {
+        guard !windowIDs.isEmpty else { return [:] }
+
+        let windowChecks = windowIDs.map { wid in
+            """
+                        try
+                            if exists (window id \(wid)) then
+                                set end of ttyPairs to ("\(wid):" & tty of current tab of window id \(wid))
+                            end if
+                        end try
+            """
+        }.joined(separator: "\n")
+
+        let script = """
+        tell application "Terminal"
+            set ttyPairs to {}
+        \(windowChecks)
+            set resultText to ""
+            repeat with p in ttyPairs
+                if resultText is not "" then set resultText to resultText & ","
+                set resultText to resultText & p
+            end repeat
+            return resultText
+        end tell
+        """
+
+        let result = try runner.run(script)
+        let raw = result?.stringValue ?? ""
+        guard !raw.isEmpty else { return [:] }
+
+        var map: [Int: String] = [:]
+        for pair in raw.split(separator: ",") {
+            let parts = pair.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2,
+                  let wid = Int(parts[0].trimmingCharacters(in: .whitespaces)) else { continue }
+            map[wid] = String(parts[1]).trimmingCharacters(in: .whitespaces)
+        }
+        return map
+    }
+
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws {
         // Use Terminal's custom title property instead of injecting shell commands
         // into the running session, which would corrupt interactive agent tools.

@@ -105,6 +105,65 @@ final class ITermController: TerminalControlling {
         return result?.stringValue ?? ""
     }
 
+    func detectIdleWindowIDs(among windowIDs: [Int]) throws -> Set<Int> {
+        guard !windowIDs.isEmpty else { return [] }
+
+        // Get the TTY device path for each window in a single AppleScript call.
+        let ttyMap = try getWindowTTYs(windowIDs: windowIDs)
+        guard !ttyMap.isEmpty else { return [] }
+
+        // Use TTY process monitoring to detect which sessions are idle.
+        // Key is window ID as string, value is TTY path.
+        let stringMap = Dictionary(uniqueKeysWithValues: ttyMap.map { (String($0.key), $0.value) })
+        let idleKeys = TTYMonitor.detectIdle(ttys: stringMap)
+
+        return Set(idleKeys.compactMap { Int($0) })
+    }
+
+    /// Batch-fetch TTY device paths for the given window IDs in a single AppleScript call.
+    func getWindowTTYs(windowIDs: [Int]) throws -> [Int: String] {
+        guard !windowIDs.isEmpty else { return [:] }
+
+        let windowChecks = windowIDs.map { wid in
+            """
+                        try
+                            if exists (window id \(wid)) then
+                                tell current session of current tab of window id \(wid)
+                                    set end of ttyPairs to ("\(wid):" & tty)
+                                end tell
+                            end if
+                        end try
+            """
+        }.joined(separator: "\n")
+
+        let script = """
+        tell application "iTerm2"
+            set ttyPairs to {}
+        \(windowChecks)
+            set resultText to ""
+            repeat with p in ttyPairs
+                if resultText is not "" then set resultText to resultText & ","
+                set resultText to resultText & p
+            end repeat
+            return resultText
+        end tell
+        """
+
+        let result = try runner.run(script)
+        let raw = result?.stringValue ?? ""
+        guard !raw.isEmpty else { return [:] }
+
+        // Parse "12345:/dev/ttys003,12346:/dev/ttys004"
+        var map: [Int: String] = [:]
+        for pair in raw.split(separator: ",") {
+            let parts = pair.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2,
+                  let wid = Int(parts[0].trimmingCharacters(in: .whitespaces)) else { continue }
+            map[wid] = String(parts[1]).trimmingCharacters(in: .whitespaces)
+        }
+        return map
+    }
+
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws {
         let escapedTitle = Shell.appleScriptEscape(title)
         let script = """
