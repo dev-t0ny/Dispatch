@@ -38,7 +38,7 @@ For each launch row, Dispatch runs:
 zsh -lc 'cd <row-directory> && exec <tool-command>'
 ```
 
-It then tiles windows on the main display.
+It then tiles windows across the selected displays.
 
 ## Build a Distributable App
 

@@ -86,6 +86,21 @@ final class DispatchViewModel: ObservableObject {
         }
     }
 
+    func setSelectedScreens(_ screenIDs: Set<String>) {
+        let availableIDs = Set(availableScreens.map(\.id))
+        var filtered = screenIDs.filter { availableIDs.contains($0) }
+
+        if filtered.isEmpty {
+            if let preferred = ScreenGeometry.preferredDisplayID(), availableIDs.contains(preferred) {
+                filtered = [preferred]
+            } else if let first = availableScreens.first?.id {
+                filtered = [first]
+            }
+        }
+
+        selectedScreenIDs = filtered
+    }
+
     func isScreenSelected(_ screenID: String) -> Bool {
         selectedScreenIDs.contains(screenID)
     }
