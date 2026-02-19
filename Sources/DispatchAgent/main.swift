@@ -222,7 +222,7 @@ final class LogMonitor: @unchecked Sendable {
 
 func usage() {
     let text = """
-    dispatch-agent --tool <tool> --session-id <id> --agent-id <id> --command <shell command>
+    dispatch-agent --tool <tool> --session-id <id> --agent-id <id> [--command <shell command>]
     """
     print(text)
 }
@@ -251,9 +251,28 @@ let args = Array(CommandLine.arguments.dropFirst())
 guard
     let tool = value(flag: "--tool", args: args),
     let sessionID = value(flag: "--session-id", args: args),
-    let agentID = value(flag: "--agent-id", args: args),
-    let command = value(flag: "--command", args: args)
+    let agentID = value(flag: "--agent-id", args: args)
 else {
+    usage()
+    exit(1)
+}
+
+let command: String?
+if let explicit = value(flag: "--command", args: args), !explicit.isEmpty {
+    command = explicit
+} else if
+    let b64 = ProcessInfo.processInfo.environment["DISPATCH_TOOL_COMMAND_B64"],
+    let data = Data(base64Encoded: b64),
+    let decoded = String(data: data, encoding: .utf8),
+    !decoded.isEmpty
+{
+    command = decoded
+} else {
+    command = nil
+}
+
+guard let command else {
+    fputs("dispatch-agent missing command payload\n", stderr)
     usage()
     exit(1)
 }

@@ -207,13 +207,13 @@ final class LaunchService {
         agentID: String,
         wrapperPath: String?
     ) -> String {
-        let envPrefix = "DISPATCH_SESSION_ID=\(Shell.singleQuote(sessionID)) DISPATCH_AGENT_ID=\(Shell.singleQuote(agentID)) DISPATCH_TOOL=\(Shell.singleQuote(toolID))"
+        let commandB64 = Data(toolCommand.utf8).base64EncodedString()
+        let envPrefix = "DISPATCH_SESSION_ID=\(Shell.singleQuote(sessionID)) DISPATCH_AGENT_ID=\(Shell.singleQuote(agentID)) DISPATCH_TOOL=\(Shell.singleQuote(toolID)) DISPATCH_TOOL_COMMAND_B64=\(Shell.singleQuote(commandB64))"
 
         let wrappedCommand: String
         if let wrapperPath {
             let escapedWrapper = Shell.singleQuote(wrapperPath)
-            let escapedCommand = Shell.singleQuote(toolCommand)
-            wrappedCommand = "\(escapedWrapper) --tool \(Shell.singleQuote(toolID)) --session-id \(Shell.singleQuote(sessionID)) --agent-id \(Shell.singleQuote(agentID)) --command \(escapedCommand)"
+            wrappedCommand = "\(escapedWrapper) --tool \(Shell.singleQuote(toolID)) --session-id \(Shell.singleQuote(sessionID)) --agent-id \(Shell.singleQuote(agentID))"
         } else {
             wrappedCommand = toolCommand
         }
