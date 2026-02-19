@@ -94,7 +94,7 @@ emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "running")
 
 let child = Process()
 child.executableURL = URL(fileURLWithPath: "/bin/zsh")
-child.arguments = ["-lic", command]
+child.arguments = ["-lc", command]
 child.standardInput = FileHandle.standardInput
 child.standardOutput = FileHandle.standardOutput
 child.standardError = FileHandle.standardError
