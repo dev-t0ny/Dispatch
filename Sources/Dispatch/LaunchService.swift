@@ -43,7 +43,7 @@ final class LaunchService {
 
         for plan in plans {
             let agentID = UUID()
-            let launchCommand = makeLaunchCommand(
+            let launchCommand = try makeLaunchCommand(
                 directory: plan.directory,
                 toolID: plan.tool.id,
                 toolCommand: plan.tool.command,
@@ -217,20 +217,53 @@ final class LaunchService {
         sessionID: String,
         agentID: String,
         wrapperPath: String?
-    ) -> String {
-        let commandB64 = Data(toolCommand.utf8).base64EncodedString()
-        let envPrefix = "DISPATCH_SESSION_ID=\(Shell.singleQuote(sessionID)) DISPATCH_AGENT_ID=\(Shell.singleQuote(agentID)) DISPATCH_TOOL=\(Shell.singleQuote(toolID)) DISPATCH_TOOL_COMMAND_B64=\(Shell.singleQuote(commandB64))"
+    ) throws -> String {
+        let scriptPath = try writeLaunchScript(
+            directory: directory,
+            toolID: toolID,
+            toolCommand: toolCommand,
+            sessionID: sessionID,
+            agentID: agentID,
+            wrapperPath: wrapperPath
+        )
 
-        let wrappedCommand: String
+        return "/bin/zsh \(Shell.singleQuote(scriptPath))"
+    }
+
+    private func writeLaunchScript(
+        directory: String,
+        toolID: String,
+        toolCommand: String,
+        sessionID: String,
+        agentID: String,
+        wrapperPath: String?
+    ) throws -> String {
+        let scriptID = UUID().uuidString
+        let scriptURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("dispatch-launch-\(scriptID).sh", isDirectory: false)
+
+        let commandB64 = Data(toolCommand.utf8).base64EncodedString()
+        let exportLine = "export DISPATCH_SESSION_ID=\(Shell.singleQuote(sessionID)) DISPATCH_AGENT_ID=\(Shell.singleQuote(agentID)) DISPATCH_TOOL=\(Shell.singleQuote(toolID)) DISPATCH_TOOL_COMMAND_B64=\(Shell.singleQuote(commandB64))"
+
+        let execLine: String
         if let wrapperPath {
             let escapedWrapper = Shell.singleQuote(wrapperPath)
-            wrappedCommand = "\(escapedWrapper) --tool \(Shell.singleQuote(toolID)) --session-id \(Shell.singleQuote(sessionID)) --agent-id \(Shell.singleQuote(agentID))"
+            execLine = "exec \(escapedWrapper) --tool \(Shell.singleQuote(toolID)) --session-id \(Shell.singleQuote(sessionID)) --agent-id \(Shell.singleQuote(agentID))"
         } else {
-            wrappedCommand = toolCommand
+            execLine = "exec \(toolCommand)"
         }
 
-        let shellBody = "cd \(Shell.singleQuote(directory)) && \(envPrefix) exec \(wrappedCommand)"
-        return "zsh -lc \(Shell.singleQuote(shellBody))"
+        let script = """
+        #!/bin/zsh
+        set -e
+        cd \(Shell.singleQuote(directory))
+        \(exportLine)
+        \(execLine)
+        """
+
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+        return scriptURL.path
     }
 
     private func resolveDispatchAgentPath() -> String? {
