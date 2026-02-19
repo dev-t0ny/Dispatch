@@ -19,11 +19,13 @@ final class DispatchViewModel: ObservableObject {
     @Published var availableScreens: [DisplayTarget]
     @Published var selectedScreenIDs: Set<String>
     @Published var activeAgents: [AgentWindow]
+    @Published var liveWindowSnapshots: [TerminalWindowSnapshot]
 
     let tools: [ToolDefinition]
 
     private let launchService: LaunchService
     private let store: SessionStore
+    private var lastRuntimeSyncError: String?
 
     init(launchService: LaunchService = LaunchService(), store: SessionStore = SessionStore()) {
         self.launchService = launchService
@@ -33,6 +35,8 @@ final class DispatchViewModel: ObservableObject {
         availableScreens = ScreenGeometry.allDisplays()
         selectedScreenIDs = []
         activeAgents = []
+        liveWindowSnapshots = []
+        lastRuntimeSyncError = nil
 
         let defaultDirectory = Self.defaultDirectory()
         let defaultTool = tools.first?.id ?? "claude"
@@ -45,6 +49,7 @@ final class DispatchViewModel: ObservableObject {
         }
 
         refreshActiveAgents()
+        refreshRuntimeContext(silent: true)
     }
 
     var totalInstances: Int {
@@ -78,35 +83,6 @@ final class DispatchViewModel: ObservableObject {
             launchRows.append(LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: assigned))
             remaining -= assigned
         }
-    }
-
-    func toggleScreen(_ screenID: String) {
-        if selectedScreenIDs.contains(screenID) {
-            if selectedScreenIDs.count > 1 {
-                selectedScreenIDs.remove(screenID)
-            }
-        } else {
-            selectedScreenIDs.insert(screenID)
-        }
-    }
-
-    func setSelectedScreens(_ screenIDs: Set<String>) {
-        let availableIDs = Set(availableScreens.map(\.id))
-        var filtered = screenIDs.filter { availableIDs.contains($0) }
-
-        if filtered.isEmpty {
-            if let preferred = ScreenGeometry.preferredDisplayID(), availableIDs.contains(preferred) {
-                filtered = [preferred]
-            } else if let first = availableScreens.first?.id {
-                filtered = [first]
-            }
-        }
-
-        selectedScreenIDs = filtered
-    }
-
-    func isScreenSelected(_ screenID: String) -> Bool {
-        selectedScreenIDs.contains(screenID)
     }
 
     func removeRow(_ rowID: UUID) {
@@ -204,32 +180,24 @@ final class DispatchViewModel: ObservableObject {
     }
 
     func attachExistingWindows() {
-        let existingSession = store.loadActiveSession()
-        let excludedIDs = Set(existingSession?.windowIDs ?? [])
+        refreshRuntimeContext(silent: false)
+    }
+
+    func refreshRuntimeContext(silent: Bool = true) {
+        refreshDisplays(preferredIDs: [])
 
         do {
-            let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: excludedIDs)
-            guard !imported.isEmpty else {
-                setStatus("No additional \(selectedTerminal.label) windows found.", level: .info)
-                return
-            }
-
-            var session: ActiveSession
-            if let existingSession, existingSession.request.terminal == selectedTerminal {
-                session = existingSession
-                session.agentWindows.append(contentsOf: imported)
-            } else {
-                let request = currentRequest()
-                session = ActiveSession(agentWindows: imported, request: request)
-            }
-
-            var seenWindowIDs: Set<Int> = []
-            session.agentWindows = session.agentWindows.filter { seenWindowIDs.insert($0.windowID).inserted }
-            store.saveActiveSession(session)
-            refreshActiveAgents()
-            setStatus("Attached \(imported.count) existing \(selectedTerminal.label) windows.", level: .success)
+            let snapshots = try launchService.listWindowSnapshots(for: selectedTerminal)
+            liveWindowSnapshots = snapshots
+            try autoAttachSnapshots(snapshots: snapshots, silent: silent)
+            lastRuntimeSyncError = nil
         } catch {
-            setStatus(error.localizedDescription, level: .error)
+            liveWindowSnapshots = []
+            let message = error.localizedDescription
+            if !silent || message != lastRuntimeSyncError {
+                setStatus(message, level: .error)
+            }
+            lastRuntimeSyncError = message
         }
     }
 
@@ -287,6 +255,7 @@ final class DispatchViewModel: ObservableObject {
             store.saveActiveSession(session)
             store.saveLastLaunch(request)
             refreshActiveAgents()
+            refreshRuntimeContext(silent: true)
             setStatus("Launched \(request.summary(using: tools)) via \(request.terminal.label).", level: .success)
         } catch {
             setStatus(error.localizedDescription, level: .error)
@@ -322,42 +291,18 @@ final class DispatchViewModel: ObservableObject {
             terminal: selectedTerminal,
             layout: layout,
             launchItems: items,
-            screenIDs: orderedSelectedScreenIDs()
+            screenIDs: []
         )
-    }
-
-    private func orderedSelectedScreenIDs() -> [String] {
-        availableScreens.map(\.id).filter { selectedScreenIDs.contains($0) }
     }
 
     private func resolvedScreens(for request: LaunchRequest) -> [ScreenGeometry] {
         refreshDisplays(preferredIDs: request.screenIDs)
-        let ids = orderedSelectedScreenIDs()
-        if ids.isEmpty {
-            return availableScreens.map(\.geometry)
-        }
-
-        let selected = availableScreens.filter { ids.contains($0.id) }
-        return selected.map(\.geometry)
+        return availableScreens.map(\.geometry)
     }
 
     private func refreshDisplays(preferredIDs: [String]) {
         availableScreens = ScreenGeometry.allDisplays()
-        let availableIDs = Set(availableScreens.map(\.id))
-
-        if preferredIDs.isEmpty {
-            selectedScreenIDs = selectedScreenIDs.filter { availableIDs.contains($0) }
-        } else {
-            selectedScreenIDs = Set(preferredIDs).filter { availableIDs.contains($0) }
-        }
-
-        if selectedScreenIDs.isEmpty {
-            if let preferred = ScreenGeometry.preferredDisplayID(), availableIDs.contains(preferred) {
-                selectedScreenIDs = [preferred]
-            } else if let firstID = availableScreens.first?.id {
-                selectedScreenIDs = [firstID]
-            }
-        }
+        selectedScreenIDs = Set(availableScreens.map(\.id))
     }
 
     private static func defaultDirectory() -> String {
@@ -375,5 +320,62 @@ final class DispatchViewModel: ObservableObject {
     private func refreshActiveAgents() {
         let session = store.loadActiveSession()
         activeAgents = session?.agentWindows ?? []
+    }
+
+    private func autoAttachSnapshots(snapshots: [TerminalWindowSnapshot], silent: Bool) throws {
+        let openIDs = Set(snapshots.map(\.windowID))
+        let session = store.loadActiveSession()
+
+        if var existing = session, existing.request.terminal == selectedTerminal {
+            existing.agentWindows.removeAll(where: { !openIDs.contains($0.windowID) })
+
+            let knownIDs = Set(existing.agentWindows.map(\.windowID))
+            let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: knownIDs)
+            if !imported.isEmpty {
+                existing.agentWindows.append(contentsOf: imported)
+                if !silent {
+                    setStatus("Detected \(imported.count) additional \(selectedTerminal.label) windows.", level: .success)
+                }
+            }
+
+            if existing.agentWindows.isEmpty {
+                store.saveActiveSession(nil)
+            } else {
+                store.saveActiveSession(existing)
+            }
+            refreshActiveAgents()
+            return
+        }
+
+        if let existing = session, existing.request.terminal != selectedTerminal {
+            let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: [])
+            if imported.isEmpty {
+                refreshActiveAgents()
+                return
+            }
+
+            let request = LaunchRequest(terminal: selectedTerminal, layout: layout, launchItems: [], screenIDs: [])
+            store.saveActiveSession(ActiveSession(agentWindows: imported, request: request))
+            refreshActiveAgents()
+
+            if !silent {
+                setStatus("Switched tracking to \(selectedTerminal.label) with \(imported.count) detected windows.", level: .info)
+            }
+            return
+        }
+
+        let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: [])
+        guard !imported.isEmpty else {
+            refreshActiveAgents()
+            return
+        }
+
+        let request = LaunchRequest(terminal: selectedTerminal, layout: layout, launchItems: [], screenIDs: [])
+        store.saveActiveSession(ActiveSession(agentWindows: imported, request: request))
+        refreshActiveAgents()
+
+        if !silent {
+            setStatus("Detected \(imported.count) existing \(selectedTerminal.label) windows.", level: .success)
+        }
     }
 }

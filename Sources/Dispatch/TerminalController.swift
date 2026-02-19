@@ -56,14 +56,20 @@ final class TerminalController: TerminalControlling {
         _ = try runner.run(script)
     }
 
-    func listWindowIDs() throws -> [Int] {
+    func listWindowSnapshots() throws -> [TerminalWindowSnapshot] {
         let script = """
         tell application \"Terminal\"
-            return id of every window
+            set rows to {}
+            repeat with w in windows
+                set b to bounds of w
+                set end of rows to ((id of w as string) & "," & (item 1 of b as string) & "," & (item 2 of b as string) & "," & (item 3 of b as string) & "," & (item 4 of b as string))
+            end repeat
+            return rows
         end tell
         """
 
-        return try runner.intArrayValue(from: runner.run(script))
+        let rows = runner.stringArrayValue(from: try runner.run(script))
+        return rows.compactMap(parseSnapshot)
     }
 
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws {
@@ -82,5 +88,21 @@ final class TerminalController: TerminalControlling {
         """
 
         _ = try runner.run(script)
+    }
+
+    private func parseSnapshot(_ row: String) -> TerminalWindowSnapshot? {
+        let parts = row.split(separator: ",").map(String.init)
+        guard parts.count == 5 else { return nil }
+        guard
+            let id = Int(parts[0]),
+            let left = Int(parts[1]),
+            let top = Int(parts[2]),
+            let right = Int(parts[3]),
+            let bottom = Int(parts[4])
+        else {
+            return nil
+        }
+
+        return TerminalWindowSnapshot(windowID: id, left: left, top: top, right: right, bottom: bottom)
     }
 }

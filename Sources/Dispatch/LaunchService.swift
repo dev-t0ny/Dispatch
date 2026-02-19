@@ -104,7 +104,7 @@ final class LaunchService {
             throw DispatchError.system("\(terminal.label) is not installed.")
         }
 
-        let existing = try controller.listWindowIDs().filter { !windowIDs.contains($0) }
+        let existing = try controller.listWindowSnapshots().map(\.windowID).filter { !windowIDs.contains($0) }
         let now = Date()
         return existing.enumerated().map { index, windowID in
             AgentWindow(
@@ -122,6 +122,18 @@ final class LaunchService {
                 lastFocusedAt: nil
             )
         }
+    }
+
+    func listWindowSnapshots(for terminal: TerminalApp) throws -> [TerminalWindowSnapshot] {
+        guard let controller = controllers[terminal] else {
+            throw DispatchError.system("No launcher configured for \(terminal.label).")
+        }
+
+        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: terminal.bundleIdentifier) != nil else {
+            return []
+        }
+
+        return try controller.listWindowSnapshots()
     }
 
     private struct LaunchPlan {

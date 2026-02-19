@@ -336,6 +336,16 @@ struct AgentWindow: Identifiable, Codable, Hashable {
     var lastFocusedAt: Date?
 }
 
+struct TerminalWindowSnapshot: Identifiable, Hashable {
+    let windowID: Int
+    let left: Int
+    let top: Int
+    let right: Int
+    let bottom: Int
+
+    var id: Int { windowID }
+}
+
 struct ActiveSession: Codable {
     var agentWindows: [AgentWindow]
     let request: LaunchRequest

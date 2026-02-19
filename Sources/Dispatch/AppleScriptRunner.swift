@@ -6,7 +6,7 @@ protocol TerminalControlling {
     func setBounds(windowID: Int, bounds: WindowBounds) throws
     func closeWindow(windowID: Int) throws
     func focusWindow(windowID: Int) throws
-    func listWindowIDs() throws -> [Int]
+    func listWindowSnapshots() throws -> [TerminalWindowSnapshot]
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws
 }
 
@@ -73,6 +73,31 @@ struct AppleScriptRunner {
 
         if let text = descriptor.stringValue, let value = Int(text) {
             return [value]
+        }
+
+        return []
+    }
+
+    func stringArrayValue(from descriptor: NSAppleEventDescriptor?) -> [String] {
+        guard let descriptor else {
+            return []
+        }
+
+        if descriptor.descriptorType == typeAEList {
+            var values: [String] = []
+            let count = descriptor.numberOfItems
+            if count > 0 {
+                for index in 1...count {
+                    if let item = descriptor.atIndex(index), let text = item.stringValue {
+                        values.append(text)
+                    }
+                }
+            }
+            return values
+        }
+
+        if let text = descriptor.stringValue {
+            return [text]
         }
 
         return []
