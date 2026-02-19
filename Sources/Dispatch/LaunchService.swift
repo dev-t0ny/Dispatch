@@ -260,6 +260,16 @@ final class LaunchService: @unchecked Sendable {
         let supportDir = Shell.singleQuote((NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/Dispatch"))
         let launchLogPath = Shell.singleQuote((NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/Dispatch/launch.log"))
 
+        // Resolve dispatchctl so the script can emit post-exit lifecycle events.
+        // dispatch-agent now uses exec, so it can't emit events after the tool exits.
+        let ctlPath = resolveDispatchCtlPath()
+        let ctlLine: String
+        if let ctlPath {
+            ctlLine = Shell.singleQuote(ctlPath)
+        } else {
+            ctlLine = "dispatchctl"  // fall back to PATH lookup
+        }
+
         // All dynamic values are either single-quoted or referenced through
         // environment variables set by the export line, so shell metacharacters
         // in directory paths, session IDs, etc. cannot break the script.
@@ -267,6 +277,10 @@ final class LaunchService: @unchecked Sendable {
         // The `clear` before the tool command removes the noisy shell command
         // line and launch breadcrumb from the terminal so the user sees a
         // clean tool startup.
+        //
+        // After the tool/wrapper exits (via exec returning), the script emits
+        // done/blocked events via dispatchctl since dispatch-agent can no longer
+        // do so (it exec'd into the tool process).
         let script = """
         #!/bin/zsh
         set +e
@@ -278,7 +292,10 @@ final class LaunchService: @unchecked Sendable {
         \(commandLine)
         dispatch_exit_code=$?
         print "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] session=$DISPATCH_SESSION_ID agent=$DISPATCH_AGENT_ID tool=$DISPATCH_TOOL exit=$dispatch_exit_code" >> \(launchLogPath)
-        if [[ $dispatch_exit_code -ne 0 ]]; then
+        if [[ $dispatch_exit_code -eq 0 ]]; then
+          \(ctlLine) state done 2>/dev/null
+        else
+          \(ctlLine) state blocked --reason "Process exited with code $dispatch_exit_code" 2>/dev/null
           print "[Dispatch] Command exited with code $dispatch_exit_code"
         fi
         exec /bin/zsh -l
@@ -300,5 +317,18 @@ final class LaunchService: @unchecked Sendable {
         }
 
         return Shell.executablePath("dispatch-agent")
+    }
+
+    private func resolveDispatchCtlPath() -> String? {
+        if let bundled = Bundle.main.path(forAuxiliaryExecutable: "dispatchctl"), FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+
+        let executablePath = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("dispatchctl").path
+        if FileManager.default.isExecutableFile(atPath: executablePath) {
+            return executablePath
+        }
+
+        return Shell.executablePath("dispatchctl")
     }
 }

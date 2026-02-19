@@ -48,36 +48,31 @@ guard let command = explicitCommand ?? commandFromB64, !command.isEmpty else {
     exit(1)
 }
 
+// Emit "running" event and log before exec replaces this process.
 emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "running")
-SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) dispatch-agent starting")
+SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) dispatch-agent exec")
 
-let child = Process()
-child.executableURL = URL(fileURLWithPath: "/bin/zsh")
-child.arguments = ["-lc", command]
-child.standardInput = FileHandle.standardInput
-child.standardOutput = FileHandle.standardOutput
-child.standardError = FileHandle.standardError
+// Set environment for the tool and any child processes.
+setenv("DISPATCH_SESSION_ID", sessionID, 1)
+setenv("DISPATCH_AGENT_ID", agentID, 1)
+setenv("DISPATCH_TOOL", tool, 1)
 
-var env = ProcessInfo.processInfo.environment
-env["DISPATCH_SESSION_ID"] = sessionID
-env["DISPATCH_AGENT_ID"] = agentID
-env["DISPATCH_TOOL"] = tool
-child.environment = env
+// Use execvp to replace this process with `zsh -lc <command>`.
+// This gives the tool full TTY ownership (foreground process group),
+// which is required for TUI apps like claude, codex, opencode.
+// Post-exit lifecycle events ("done"/"blocked") are emitted by the
+// calling launch script, which regains control after exec's process exits.
+let cArgs: [UnsafeMutablePointer<CChar>?] = [
+    strdup("/bin/zsh"),
+    strdup("-lc"),
+    strdup(command),
+    nil
+]
+execvp("/bin/zsh", cArgs)
 
-do {
-    try child.run()
-    SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) child started")
-    child.waitUntilExit()
-    SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) child exit=\(child.terminationStatus)")
-    if child.terminationStatus == 0 {
-        emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "done")
-    } else {
-        emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "blocked", reason: "Process exited with code \(child.terminationStatus)")
-    }
-    exit(child.terminationStatus)
-} catch {
-    SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) child failed=\(error.localizedDescription)")
-    emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "blocked", reason: error.localizedDescription)
-    fputs("dispatch-agent failed: \(error.localizedDescription)\n", stderr)
-    exit(1)
-}
+// execvp only returns on failure.
+let err = String(cString: strerror(errno))
+SharedLaunchLog.append("[\(ISO8601DateFormatter().string(from: Date()))] session=\(sessionID) agent=\(agentID) tool=\(tool) exec failed=\(err)")
+emit(sessionID: sessionID, agentID: agentID, tool: tool, state: "blocked", reason: "exec failed: \(err)")
+fputs("dispatch-agent exec failed: \(err)\n", stderr)
+exit(1)
