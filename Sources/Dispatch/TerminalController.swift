@@ -59,12 +59,12 @@ final class TerminalController: TerminalControlling {
     func listWindowSnapshots() throws -> [TerminalWindowSnapshot] {
         let script = """
         tell application \"Terminal\"
-            set rows to {}
+            set snapshotRows to {}
             repeat with w in windows
                 set b to bounds of w
-                set end of rows to ((id of w as string) & "," & (item 1 of b as string) & "," & (item 2 of b as string) & "," & (item 3 of b as string) & "," & (item 4 of b as string))
+                set end of snapshotRows to ((id of w as string) & "," & (item 1 of b as string) & "," & (item 2 of b as string) & "," & (item 3 of b as string) & "," & (item 4 of b as string))
             end repeat
-            return rows
+            return snapshotRows
         end tell
         """
 
