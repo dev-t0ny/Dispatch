@@ -62,7 +62,8 @@ final class TerminalController: TerminalControlling {
             set snapshotRows to {}
             repeat with w in windows
                 set b to bounds of w
-                set end of snapshotRows to ((id of w as string) & "," & (item 1 of b as string) & "," & (item 2 of b as string) & "," & (item 3 of b as string) & "," & (item 4 of b as string))
+                set rowValue to (((id of w) as text) & "," & ((item 1 of b) as text) & "," & ((item 2 of b) as text) & "," & ((item 3 of b) as text) & "," & ((item 4 of b) as text))
+                set end of snapshotRows to rowValue
             end repeat
             return snapshotRows
         end tell
