@@ -23,7 +23,7 @@ final class LaunchService {
         tools
     }
 
-    func launch(request: LaunchRequest, screen: ScreenGeometry) throws -> ActiveSession {
+    func launch(request: LaunchRequest, screens: [ScreenGeometry]) throws -> ActiveSession {
         guard request.totalCount > 0 else {
             throw DispatchError.validation("Pick at least one tool instance.")
         }
@@ -50,7 +50,7 @@ final class LaunchService {
             }
         }
 
-        let targetBounds = tiler.bounds(for: request.totalCount, layout: request.layout, screen: screen)
+        let targetBounds = tiler.bounds(for: request.totalCount, layout: request.layout, screens: screens)
         for (windowID, bounds) in zip(windowIDs, targetBounds) {
             try controller.setBounds(windowID: windowID, bounds: bounds)
         }

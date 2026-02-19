@@ -8,6 +8,8 @@ Dispatch is a macOS menu bar launcher for running multiple agent terminals (Clau
 - Launch mixed tool batches in one run (for example: `4x Claude + 2x Codex`).
 - Set different directories per launch row.
 - Terminal backend support: `iTerm2` and `Terminal`.
+- Select which displays are used for window tiling.
+- Quick total windows input in the header, plus per-terminal counts.
 - Visual layout picker (`Adaptive`, `Balanced`, `Wide`, `Dense`).
 - Save and reuse named presets.
 - Relaunch the last session.

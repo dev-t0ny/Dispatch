@@ -76,10 +76,77 @@ struct LaunchRequest: Codable {
     let terminal: TerminalApp
     let layout: LayoutPreset
     let launchItems: [LaunchItem]
+    let screenIDs: [String]
 
     var totalCount: Int {
         launchItems.map(\.count).reduce(0, +)
     }
+
+    init(terminal: TerminalApp, layout: LayoutPreset, launchItems: [LaunchItem], screenIDs: [String] = []) {
+        self.terminal = terminal
+        self.layout = layout
+        self.launchItems = launchItems
+        self.screenIDs = screenIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case terminal
+        case layout
+        case launchItems
+        case screenIDs
+
+        case directory
+        case toolLaunches
+        case toolID
+        case count
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        terminal = try container.decodeIfPresent(TerminalApp.self, forKey: .terminal) ?? .iTerm2
+        layout = try container.decodeIfPresent(LayoutPreset.self, forKey: .layout) ?? .adaptive
+        screenIDs = try container.decodeIfPresent([String].self, forKey: .screenIDs) ?? []
+
+        if let items = try container.decodeIfPresent([LaunchItem].self, forKey: .launchItems), !items.isEmpty {
+            launchItems = items
+            return
+        }
+
+        if
+            let legacyDirectory = try container.decodeIfPresent(String.self, forKey: .directory),
+            let legacyToolLaunches = try container.decodeIfPresent([LegacyToolLaunch].self, forKey: .toolLaunches)
+        {
+            launchItems = legacyToolLaunches.map {
+                LaunchItem(toolID: $0.toolID, directory: legacyDirectory, count: $0.count)
+            }
+            return
+        }
+
+        if
+            let toolID = try container.decodeIfPresent(String.self, forKey: .toolID),
+            let directory = try container.decodeIfPresent(String.self, forKey: .directory),
+            let count = try container.decodeIfPresent(Int.self, forKey: .count)
+        {
+            launchItems = [LaunchItem(toolID: toolID, directory: directory, count: count)]
+            return
+        }
+
+        launchItems = []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(terminal, forKey: .terminal)
+        try container.encode(layout, forKey: .layout)
+        try container.encode(launchItems, forKey: .launchItems)
+        try container.encode(screenIDs, forKey: .screenIDs)
+    }
+}
+
+private struct LegacyToolLaunch: Codable {
+    let toolID: String
+    let count: Int
 }
 
 struct LaunchItem: Codable, Hashable {

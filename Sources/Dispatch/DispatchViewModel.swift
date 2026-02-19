@@ -16,6 +16,8 @@ final class DispatchViewModel: ObservableObject {
     @Published var presets: [LaunchPreset]
     @Published var status: StatusMessage?
     @Published var launchRows: [LaunchRow]
+    @Published var availableScreens: [DisplayTarget]
+    @Published var selectedScreenIDs: Set<String>
 
     let tools: [ToolDefinition]
 
@@ -27,10 +29,14 @@ final class DispatchViewModel: ObservableObject {
         self.store = store
         tools = launchService.toolList()
         presets = store.loadPresets().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        availableScreens = ScreenGeometry.allDisplays()
+        selectedScreenIDs = []
 
         let defaultDirectory = Self.defaultDirectory()
         let defaultTool = tools.first?.id ?? "claude"
         launchRows = [LaunchRow(id: UUID(), toolID: defaultTool, directory: defaultDirectory, count: 6)]
+
+        refreshDisplays(preferredIDs: [])
 
         if let last = store.loadLastLaunch() {
             apply(request: last)
@@ -41,15 +47,53 @@ final class DispatchViewModel: ObservableObject {
         launchRows.map(\.count).reduce(0, +)
     }
 
-    func addRow() {
+    func addTerminal() {
         let defaultTool = tools.first?.id ?? "claude"
         launchRows.append(LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: 1))
+    }
+
+    func setTotalInstances(_ total: Int) {
+        let clampedTotal = max(0, min(240, total))
+
+        if launchRows.isEmpty {
+            let defaultTool = tools.first?.id ?? "claude"
+            launchRows = [LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: 0)]
+        }
+
+        var remaining = clampedTotal
+
+        for index in launchRows.indices {
+            let assigned = min(24, remaining)
+            launchRows[index].count = assigned
+            remaining -= assigned
+        }
+
+        while remaining > 0 {
+            let defaultTool = tools.first?.id ?? "claude"
+            let assigned = min(24, remaining)
+            launchRows.append(LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: assigned))
+            remaining -= assigned
+        }
+    }
+
+    func toggleScreen(_ screenID: String) {
+        if selectedScreenIDs.contains(screenID) {
+            if selectedScreenIDs.count > 1 {
+                selectedScreenIDs.remove(screenID)
+            }
+        } else {
+            selectedScreenIDs.insert(screenID)
+        }
+    }
+
+    func isScreenSelected(_ screenID: String) -> Bool {
+        selectedScreenIDs.contains(screenID)
     }
 
     func removeRow(_ rowID: UUID) {
         launchRows.removeAll(where: { $0.id == rowID })
         if launchRows.isEmpty {
-            addRow()
+            addTerminal()
         }
     }
 
@@ -140,13 +184,14 @@ final class DispatchViewModel: ObservableObject {
     }
 
     private func launch(request: LaunchRequest) {
-        guard let screen = ScreenGeometry.mainDisplay() else {
-            setStatus("Unable to read display geometry.", level: .error)
+        let screens = resolvedScreens(for: request)
+        guard !screens.isEmpty else {
+            setStatus("Unable to read selected display geometry.", level: .error)
             return
         }
 
         do {
-            let session = try launchService.launch(request: request, screen: screen)
+            let session = try launchService.launch(request: request, screens: screens)
             store.saveActiveSession(session)
             store.saveLastLaunch(request)
             setStatus("Launched \(request.summary(using: tools)) via \(request.terminal.label).", level: .success)
@@ -156,6 +201,7 @@ final class DispatchViewModel: ObservableObject {
     }
 
     private func apply(request: LaunchRequest) {
+        refreshDisplays(preferredIDs: request.screenIDs)
         selectedTerminal = request.terminal
         layout = request.layout
 
@@ -182,8 +228,43 @@ final class DispatchViewModel: ObservableObject {
         return LaunchRequest(
             terminal: selectedTerminal,
             layout: layout,
-            launchItems: items
+            launchItems: items,
+            screenIDs: orderedSelectedScreenIDs()
         )
+    }
+
+    private func orderedSelectedScreenIDs() -> [String] {
+        availableScreens.map(\.id).filter { selectedScreenIDs.contains($0) }
+    }
+
+    private func resolvedScreens(for request: LaunchRequest) -> [ScreenGeometry] {
+        refreshDisplays(preferredIDs: request.screenIDs)
+        let ids = orderedSelectedScreenIDs()
+        if ids.isEmpty {
+            return availableScreens.map(\.geometry)
+        }
+
+        let selected = availableScreens.filter { ids.contains($0.id) }
+        return selected.map(\.geometry)
+    }
+
+    private func refreshDisplays(preferredIDs: [String]) {
+        availableScreens = ScreenGeometry.allDisplays()
+        let availableIDs = Set(availableScreens.map(\.id))
+
+        if preferredIDs.isEmpty {
+            selectedScreenIDs = selectedScreenIDs.filter { availableIDs.contains($0) }
+        } else {
+            selectedScreenIDs = Set(preferredIDs).filter { availableIDs.contains($0) }
+        }
+
+        if selectedScreenIDs.isEmpty {
+            if let preferred = ScreenGeometry.preferredDisplayID(), availableIDs.contains(preferred) {
+                selectedScreenIDs = [preferred]
+            } else if let firstID = availableScreens.first?.id {
+                selectedScreenIDs = [firstID]
+            }
+        }
     }
 
     private static func defaultDirectory() -> String {

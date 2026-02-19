@@ -13,6 +13,7 @@ struct DispatchMenuView: View {
             header
             terminalPicker
             launchRowsSection
+            screenSection
             layoutSection
             controls
             presetsSection
@@ -39,9 +40,16 @@ struct DispatchMenuView: View {
             Text("Dispatch")
                 .font(.title3.bold())
             Spacer()
-            Text("\(viewModel.totalInstances) total")
+
+            Text("Windows")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+
+            TextField("0", value: totalCountBinding, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 52)
+
+            Stepper("", value: totalCountBinding, in: 0...240)
+                .labelsHidden()
         }
     }
 
@@ -60,8 +68,8 @@ struct DispatchMenuView: View {
                 Text("Launch Plan")
                     .font(.headline)
                 Spacer()
-                Button("Add Row") {
-                    viewModel.addRow()
+                Button("Add Terminal") {
+                    viewModel.addTerminal()
                 }
             }
 
@@ -81,11 +89,12 @@ struct DispatchMenuView: View {
                         viewModel.chooseDirectory(for: row.id)
                     }
 
-                    Stepper(value: countBinding(for: row.id), in: 0...24) {
-                        Text("\(row.count)")
-                            .frame(width: 24)
-                    }
-                    .labelsHidden()
+                    TextField("0", value: countBinding(for: row.id), format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 42)
+
+                    Stepper("", value: countBinding(for: row.id), in: 0...24)
+                        .labelsHidden()
 
                     Button {
                         viewModel.removeRow(row.id)
@@ -106,6 +115,41 @@ struct DispatchMenuView: View {
             LazyVGrid(columns: layoutColumns, spacing: 8) {
                 ForEach(LayoutPreset.allCases) { option in
                     layoutCard(option)
+                }
+            }
+        }
+    }
+
+    private var screenSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Screens")
+                .font(.headline)
+
+            if viewModel.availableScreens.isEmpty {
+                Text("No displays detected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                FlowLayout(spacing: 6) {
+                    ForEach(viewModel.availableScreens) { screen in
+                        Button {
+                            viewModel.toggleScreen(screen.id)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: viewModel.isScreenSelected(screen.id) ? "checkmark.circle.fill" : "circle")
+                                Text(screen.name)
+                                    .lineLimit(1)
+                            }
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(viewModel.isScreenSelected(screen.id) ? Color.accentColor.opacity(0.18) : Color.gray.opacity(0.12))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -245,6 +289,28 @@ struct DispatchMenuView: View {
             return .green
         case .error:
             return .red
+        }
+    }
+
+    private var totalCountBinding: Binding<Int> {
+        Binding(
+            get: {
+                viewModel.totalInstances
+            },
+            set: { value in
+                viewModel.setTotalInstances(value)
+            }
+        )
+    }
+}
+
+private struct FlowLayout<Content: View>: View {
+    let spacing: CGFloat
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            content
         }
     }
 }

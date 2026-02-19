@@ -11,7 +11,27 @@ struct WindowTiler {
     private let margin: Double = 10
     private let gap: Double = 8
 
-    func bounds(for count: Int, layout: LayoutPreset, screen: ScreenGeometry) -> [WindowBounds] {
+    func bounds(for count: Int, layout: LayoutPreset, screens: [ScreenGeometry]) -> [WindowBounds] {
+        guard count > 0 else { return [] }
+
+        let usableScreens = screens.isEmpty ? ScreenGeometry.allDisplays().map(\.geometry) : screens
+        guard !usableScreens.isEmpty else { return [] }
+
+        if usableScreens.count == 1, let onlyScreen = usableScreens.first {
+            return boundsForSingleScreen(for: count, layout: layout, screen: onlyScreen)
+        }
+
+        let allocations = allocation(for: count, screens: usableScreens)
+        var allBounds: [WindowBounds] = []
+
+        for (screen, allocationCount) in zip(usableScreens, allocations) where allocationCount > 0 {
+            allBounds.append(contentsOf: boundsForSingleScreen(for: allocationCount, layout: layout, screen: screen))
+        }
+
+        return allBounds
+    }
+
+    private func boundsForSingleScreen(for count: Int, layout: LayoutPreset, screen: ScreenGeometry) -> [WindowBounds] {
         let (rows, cols) = gridDimensions(for: count, layout: layout, screen: screen)
 
         let availableWidth = max(100, screen.visibleFrame.width - (2 * margin) - (Double(cols - 1) * gap))
@@ -35,6 +55,31 @@ struct WindowTiler {
 
             return WindowBounds(left: left, top: top, right: right, bottom: bottom)
         }
+    }
+
+    private func allocation(for count: Int, screens: [ScreenGeometry]) -> [Int] {
+        let areas = screens.map { max(1, $0.visibleFrame.width * $0.visibleFrame.height) }
+        let areaSum = max(1, areas.reduce(0, +))
+
+        var allocations = Array(repeating: 0, count: screens.count)
+        var fractions: [(index: Int, fraction: Double)] = []
+        var assigned = 0
+
+        for index in screens.indices {
+            let exact = (areas[index] / areaSum) * Double(count)
+            let whole = Int(floor(exact))
+            allocations[index] = whole
+            assigned += whole
+            fractions.append((index: index, fraction: exact - Double(whole)))
+        }
+
+        var remaining = count - assigned
+        for item in fractions.sorted(by: { $0.fraction > $1.fraction }) where remaining > 0 {
+            allocations[item.index] += 1
+            remaining -= 1
+        }
+
+        return allocations
     }
 
     private func gridDimensions(for count: Int, layout: LayoutPreset, screen: ScreenGeometry) -> (Int, Int) {
