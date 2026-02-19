@@ -1,48 +1,46 @@
+![Dispatch Demo](./assets/dispatch-demo.gif)
+
 # Dispatch
 
-Dispatch is a macOS menu bar launcher for running multiple agent terminals (Claude Code, Codex, OpenCode) with mixed tools, mixed directories, and auto-tiling.
+Agentic engineering is here, but local orchestration has been missing.
 
-## Features
+You can spin up amazing coding agents, but launching and arranging 4, 6, or 12 coordinated terminals across tools and monitors is still too manual.
+I built **Dispatch** to fix that.
 
-- Menu bar UI (`Dispatch`) built with SwiftUI.
-- Launch mixed tool batches in one run (for example: `4x Claude + 2x Codex`).
-- Set different directories per launch row.
-- Terminal backend support: `iTerm2` and `Terminal`.
-- Select which displays are used for window tiling.
-- Quick total windows input in the header, plus per-terminal counts.
-- Visual layout picker (`Adaptive`, `Balanced`, `Wide`, `Dense`).
-- Save and reuse named presets.
-- Relaunch the last session.
-- Close only windows launched by Dispatch.
+Dispatch is a macOS menu bar mission control for multi-agent development sessions.
 
-## Requirements
+## Why Dispatch Exists
+
+- Agentic workflows need parallelism, not one terminal at a time.
+- Switching between tools should be easy (`claude`, `codex`, `opencode`, and more).
+- Multi-screen setups should be first-class for coding sessions.
+- Window management should be automatic, not a daily chore.
+
+## What It Does
+
+- Launches mixed tool sessions in one click (for example `4x Claude + 2x Codex`).
+- Supports per-terminal directories in the same launch plan.
+- Supports multiple terminal apps: `iTerm2` and `Terminal`.
+- Lets you target specific displays for tiling.
+- Includes a visual layout picker (`Adaptive`, `Balanced`, `Wide`, `Dense`).
+- Saves presets, relaunches last session, and closes only Dispatch-owned windows.
+
+## Quick Start
+
+Requirements:
 
 - macOS 13+
-- iTerm2 and/or Terminal installed
-- Tool CLI installed and available in `PATH` (for example: `claude`, `codex`, `opencode`)
-- Automation permission for controlling terminal apps (requested by macOS on first launch)
+- iTerm2 and/or Terminal
+- Tool CLIs available in `PATH` (examples: `claude`, `codex`, `opencode`)
+- macOS automation permission for terminal control
 
-## Run
+Run locally:
 
 ```bash
 swift run
 ```
 
-This starts Dispatch as a menu bar app.
-
-## How Launch Works
-
-For each launch row, Dispatch runs:
-
-```bash
-zsh -lc 'cd <row-directory> && exec <tool-command>'
-```
-
-It then tiles windows across the selected displays.
-
 ## Build a Distributable App
-
-Build a signed app bundle and zipped artifact:
 
 ```bash
 ./scripts/package_app.sh
@@ -52,3 +50,30 @@ Artifacts:
 
 - `dist/Dispatch.app`
 - `dist/Dispatch-macos.zip`
+
+## How Launching Works
+
+For each launch row, Dispatch runs:
+
+```bash
+zsh -lc 'cd <row-directory> && exec <tool-command>'
+```
+
+Then windows are tiled across your selected displays.
+
+## Contributing
+
+PRs are open and very welcome.
+
+If you want to contribute, great targets are:
+
+- more terminal adapters
+- better layout strategies
+- preset sharing/import-export
+- quality-of-life UX improvements
+
+If you hit bugs or weird automation edge cases, open an issue with your macOS version, terminal app, and a short reproduction.
+
+---
+
+Built by someone who wanted agentic programming to feel like a control room, not a tab-management exercise.
