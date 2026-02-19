@@ -8,6 +8,8 @@ protocol TerminalControlling {
     func focusWindow(windowID: Int) throws
     func listWindowSnapshots() throws -> [TerminalWindowSnapshot]
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws
+    /// Read the last N lines of visible text from the terminal session in the given window.
+    func readSessionContent(windowID: Int, lineCount: Int) throws -> String
 }
 
 struct AppleScriptRunner {

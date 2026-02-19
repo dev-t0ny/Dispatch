@@ -25,6 +25,7 @@ final class DispatchViewModel: ObservableObject {
 
     private let launchService: LaunchService
     private let store: SessionStore
+    private let overlayController = AttentionOverlayController()
     private var lastRuntimeSyncError: String?
     private var eventLogByteOffset: UInt64
 
@@ -179,6 +180,7 @@ final class DispatchViewModel: ObservableObject {
         do {
             try launchService.close(session: activeSession)
             store.saveActiveSession(nil)
+            overlayController.hideAll()
             refreshActiveAgents()
             setStatus("Closed \(activeSession.windowIDs.count) Dispatch windows.", level: .success)
         } catch {
@@ -207,6 +209,9 @@ final class DispatchViewModel: ObservableObject {
             }
             lastRuntimeSyncError = message
         }
+
+        scanForPrompts()
+        syncOverlays()
     }
 
     func focusAgent(_ agentID: UUID) {
@@ -249,6 +254,9 @@ final class DispatchViewModel: ObservableObject {
 
         store.saveActiveSession(session)
         refreshActiveAgents()
+
+        // Immediately sync overlays so the overlay appears/disappears on manual state change.
+        syncOverlays()
     }
 
     func focusNextAttention() {
@@ -414,6 +422,73 @@ final class DispatchViewModel: ObservableObject {
         default:
             return nil
         }
+    }
+
+    /// Scan running agents for prompt patterns and auto-transition to needsInput.
+    private func scanForPrompts() {
+        guard var session = store.loadActiveSession() else { return }
+        let terminal = session.request.terminal
+
+        let detected = launchService.detectAttentionNeeded(
+            agents: session.agentWindows,
+            terminal: terminal
+        )
+
+        guard !detected.isEmpty else { return }
+
+        var didChange = false
+        for agentID in detected {
+            guard let index = session.agentWindows.firstIndex(where: { $0.id == agentID }) else { continue }
+            guard session.agentWindows[index].state == .running else { continue }
+
+            session.agentWindows[index].state = .needsInput
+            didChange = true
+        }
+
+        if didChange {
+            store.saveActiveSession(session)
+            refreshActiveAgents()
+        }
+    }
+
+    /// Show or hide transparent overlays based on current agent states and bounds.
+    private func syncOverlays() {
+        let session = store.loadActiveSession()
+        guard let session else {
+            overlayController.hideAll()
+            return
+        }
+
+        let snapshotMap = Dictionary(
+            uniqueKeysWithValues: liveWindowSnapshots.map { ($0.windowID, $0) }
+        )
+
+        // Track which agents should have overlays.
+        var activeOverlayIDs: Set<UUID> = []
+
+        for agent in session.agentWindows {
+            let shouldOverlay = agent.state == .needsInput || agent.state == .blocked
+
+            if shouldOverlay, let snapshot = snapshotMap[agent.windowID] {
+                let bounds = WindowBounds(
+                    left: snapshot.left,
+                    top: snapshot.top,
+                    right: snapshot.right,
+                    bottom: snapshot.bottom
+                )
+                overlayController.showOverlay(for: agent.id, bounds: bounds, state: agent.state)
+                activeOverlayIDs.insert(agent.id)
+            } else {
+                overlayController.hideOverlay(for: agent.id)
+            }
+        }
+
+        // Hide overlays for agents that no longer exist.
+        let allAgentIDs = Set(session.agentWindows.map(\.id))
+        for agent in session.agentWindows where !activeOverlayIDs.contains(agent.id) {
+            overlayController.hideOverlay(for: agent.id)
+        }
+        _ = allAgentIDs  // suppress unused warning
     }
 
     private func autoAttachSnapshots(snapshots: [TerminalWindowSnapshot], silent: Bool) throws {

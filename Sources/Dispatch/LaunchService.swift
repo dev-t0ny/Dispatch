@@ -109,6 +109,27 @@ final class LaunchService: @unchecked Sendable {
         try controller.applyIdentity(windowID: agent.windowID, title: agent.title, badge: agent.badge, tone: agent.tone)
     }
 
+    /// Read the last few lines of terminal content for a specific window.
+    func readSessionContent(windowID: Int, terminal: TerminalApp, lineCount: Int = 20) -> String? {
+        guard let controller = controllers[terminal] else { return nil }
+        return try? controller.readSessionContent(windowID: windowID, lineCount: lineCount)
+    }
+
+    /// Scan all agents in a session for prompt patterns. Returns the set of
+    /// agent IDs whose terminal content indicates they're waiting for input.
+    func detectAttentionNeeded(agents: [AgentWindow], terminal: TerminalApp) -> Set<UUID> {
+        var needsInput: Set<UUID> = []
+        for agent in agents where agent.state == .running {
+            guard let content = readSessionContent(windowID: agent.windowID, terminal: terminal, lineCount: 20) else {
+                continue
+            }
+            if PromptDetector.detectsPrompt(in: content, toolID: agent.toolID) {
+                needsInput.insert(agent.id)
+            }
+        }
+        return needsInput
+    }
+
     func importExistingWindows(for terminal: TerminalApp, excluding windowIDs: Set<Int>) throws -> [AgentWindow] {
         guard let controller = controllers[terminal] else {
             throw DispatchError.system("No launcher configured for \(terminal.label).")

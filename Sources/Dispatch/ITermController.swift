@@ -85,6 +85,26 @@ final class ITermController: TerminalControlling {
         return runner.windowSnapshotsValue(from: try runner.run(script))
     }
 
+    func readSessionContent(windowID: Int, lineCount: Int) throws -> String {
+        let script = """
+        tell application "iTerm2"
+            if exists (window id \(windowID)) then
+                tell current session of current tab of window id \(windowID)
+                    set totalRows to number of rows
+                    set startRow to totalRows - \(lineCount)
+                    if startRow < 0 then set startRow to 0
+                    set screenText to contents
+                    return screenText
+                end tell
+            end if
+            return ""
+        end tell
+        """
+
+        let result = try runner.run(script)
+        return result?.stringValue ?? ""
+    }
+
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws {
         let escapedTitle = Shell.appleScriptEscape(title)
         let script = """
