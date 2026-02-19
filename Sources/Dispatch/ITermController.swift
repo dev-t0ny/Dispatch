@@ -7,9 +7,9 @@ final class ITermController: TerminalControlling {
     func launchWindow(command: String) throws -> Int {
         let escapedCommand = Shell.appleScriptEscape(command)
         let script = """
-        tell application \"iTerm2\"
+        tell application "iTerm2"
             activate
-            set newWindow to (create window with default profile command \"\(escapedCommand)\")
+            set newWindow to (create window with default profile command "\(escapedCommand)")
             return (id of newWindow)
         end tell
         """
@@ -19,7 +19,7 @@ final class ITermController: TerminalControlling {
 
     func setBounds(windowID: Int, bounds: WindowBounds) throws {
         let script = """
-        tell application \"iTerm2\"
+        tell application "iTerm2"
             if exists (window id \(windowID)) then
                 set bounds of window id \(windowID) to {\(bounds.left), \(bounds.top), \(bounds.right), \(bounds.bottom)}
             end if
@@ -31,7 +31,7 @@ final class ITermController: TerminalControlling {
 
     func closeWindow(windowID: Int) throws {
         let script = """
-        tell application \"iTerm2\"
+        tell application "iTerm2"
             if exists (window id \(windowID)) then
                 close (window id \(windowID))
             end if
@@ -43,7 +43,7 @@ final class ITermController: TerminalControlling {
 
     func focusWindow(windowID: Int) throws {
         let script = """
-        tell application \"iTerm2\"
+        tell application "iTerm2"
             activate
             if exists (window id \(windowID)) then
                 select (window id \(windowID))
@@ -56,7 +56,7 @@ final class ITermController: TerminalControlling {
 
     func listWindowSnapshots() throws -> [TerminalWindowSnapshot] {
         let script = """
-        tell application \"iTerm2\"
+        tell application "iTerm2"
             set snapshotRows to {}
             repeat with w in windows
                 set b to bounds of w
@@ -72,13 +72,11 @@ final class ITermController: TerminalControlling {
 
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws {
         let escapedTitle = Shell.appleScriptEscape(title)
-        let escapedBadge = Shell.appleScriptEscape("[\(tone.label)] \(badge)")
         let script = """
-        tell application \"iTerm2\"
+        tell application "iTerm2"
             if exists (window id \(windowID)) then
                 tell current session of current tab of window id \(windowID)
-                    set name to \"\(escapedTitle)\"
-                    set badge text to \"\(escapedBadge)\"
+                    set name to "\(escapedTitle)"
                 end tell
             end if
         end tell
@@ -86,5 +84,4 @@ final class ITermController: TerminalControlling {
 
         _ = try runner.run(script)
     }
-
 }

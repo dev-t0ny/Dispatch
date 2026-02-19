@@ -68,7 +68,11 @@ final class LaunchService {
                 lastFocusedAt: nil
             )
 
-            try controller.applyIdentity(windowID: agent.windowID, title: agent.title, badge: agent.badge, tone: agent.tone)
+            do {
+                try controller.applyIdentity(windowID: agent.windowID, title: agent.title, badge: agent.badge, tone: agent.tone)
+            } catch {
+                // Identity decoration should never block terminal launch.
+            }
             agents.append(agent)
             usleep(80_000)
         }
