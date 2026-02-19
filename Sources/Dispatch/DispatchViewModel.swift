@@ -483,7 +483,7 @@ final class DispatchViewModel: ObservableObject {
                     right: snapshot.right,
                     bottom: snapshot.bottom
                 )
-                overlayController.showOverlay(for: agent.id, bounds: bounds, state: agent.state)
+                overlayController.showOverlay(for: agent.id, windowID: agent.windowID, bounds: bounds, state: agent.state)
                 activeOverlayIDs.insert(agent.id)
             } else {
                 overlayController.hideOverlay(for: agent.id)
