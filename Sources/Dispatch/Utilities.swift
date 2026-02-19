@@ -99,4 +99,29 @@ struct Shell {
             return false
         }
     }
+
+    static func executablePath(_ executable: String) -> String? {
+        if executable.contains("/") {
+            return FileManager.default.isExecutableFile(atPath: executable) ? executable : nil
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        process.arguments = [executable]
+
+        let out = Pipe()
+        process.standardOutput = out
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            guard let raw = String(data: data, encoding: .utf8) else { return nil }
+            let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return path.isEmpty ? nil : path
+        } catch {
+            return nil
+        }
+    }
 }

@@ -347,6 +347,7 @@ struct TerminalWindowSnapshot: Identifiable, Hashable {
 }
 
 struct ActiveSession: Codable {
+    let sessionID: String
     var agentWindows: [AgentWindow]
     let request: LaunchRequest
     let launchedAt: Date
@@ -356,7 +357,8 @@ struct ActiveSession: Codable {
         agentWindows.map(\.windowID)
     }
 
-    init(agentWindows: [AgentWindow], request: LaunchRequest, launchedAt: Date = Date(), focusHistory: [UUID] = []) {
+    init(sessionID: String = UUID().uuidString, agentWindows: [AgentWindow], request: LaunchRequest, launchedAt: Date = Date(), focusHistory: [UUID] = []) {
+        self.sessionID = sessionID
         self.agentWindows = agentWindows
         self.request = request
         self.launchedAt = launchedAt
@@ -364,6 +366,7 @@ struct ActiveSession: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
         case agentWindows
         case request
         case launchedAt
@@ -373,6 +376,7 @@ struct ActiveSession: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID) ?? UUID().uuidString
         request = try container.decode(LaunchRequest.self, forKey: .request)
         launchedAt = try container.decodeIfPresent(Date.self, forKey: .launchedAt) ?? Date()
         focusHistory = try container.decodeIfPresent([UUID].self, forKey: .focusHistory) ?? []
@@ -388,6 +392,7 @@ struct ActiveSession: Codable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionID, forKey: .sessionID)
         try container.encode(agentWindows, forKey: .agentWindows)
         try container.encode(request, forKey: .request)
         try container.encode(launchedAt, forKey: .launchedAt)

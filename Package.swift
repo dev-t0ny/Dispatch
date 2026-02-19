@@ -9,12 +9,22 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "Dispatch", targets: ["DispatchLauncher"])
+        .executable(name: "Dispatch", targets: ["DispatchLauncher"]),
+        .executable(name: "dispatchctl", targets: ["DispatchCtl"]),
+        .executable(name: "dispatch-agent", targets: ["DispatchAgent"])
     ],
     targets: [
         .executableTarget(
             name: "DispatchLauncher",
             path: "Sources/Dispatch"
+        ),
+        .executableTarget(
+            name: "DispatchCtl",
+            path: "Sources/DispatchCtl"
+        ),
+        .executableTarget(
+            name: "DispatchAgent",
+            path: "Sources/DispatchAgent"
         ),
     ]
 )

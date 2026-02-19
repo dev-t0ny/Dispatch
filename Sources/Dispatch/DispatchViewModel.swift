@@ -26,6 +26,7 @@ final class DispatchViewModel: ObservableObject {
     private let launchService: LaunchService
     private let store: SessionStore
     private var lastRuntimeSyncError: String?
+    private var processedEventLineCount: Int
 
     init(launchService: LaunchService = LaunchService(), store: SessionStore = SessionStore()) {
         self.launchService = launchService
@@ -37,6 +38,7 @@ final class DispatchViewModel: ObservableObject {
         activeAgents = []
         liveWindowSnapshots = []
         lastRuntimeSyncError = nil
+        processedEventLineCount = 0
 
         let defaultDirectory = Self.defaultDirectory()
         let defaultTool = tools.first?.id ?? "claude"
@@ -49,6 +51,7 @@ final class DispatchViewModel: ObservableObject {
         }
 
         refreshActiveAgents()
+        primeEventCursor()
         refreshRuntimeContext(silent: true)
     }
 
@@ -188,6 +191,7 @@ final class DispatchViewModel: ObservableObject {
     }
 
     func refreshRuntimeContext(silent: Bool = true) {
+        applyPendingRuntimeEvents()
         refreshDisplays(preferredIDs: [])
 
         do {
@@ -345,6 +349,63 @@ final class DispatchViewModel: ObservableObject {
     private func refreshActiveAgents() {
         let session = store.loadActiveSession()
         activeAgents = session?.agentWindows ?? []
+    }
+
+    private func primeEventCursor() {
+        processedEventLineCount = DispatchEventLog.readLines().count
+    }
+
+    private func applyPendingRuntimeEvents() {
+        let lines = DispatchEventLog.readLines()
+        if processedEventLineCount > lines.count {
+            processedEventLineCount = 0
+        }
+
+        guard processedEventLineCount < lines.count else { return }
+        let freshLines = lines[processedEventLineCount...]
+        processedEventLineCount = lines.count
+
+        guard var session = store.loadActiveSession() else { return }
+
+        var didChange = false
+        let decoder = JSONDecoder()
+
+        for line in freshLines {
+            guard let data = line.data(using: .utf8) else { continue }
+            guard let event = try? decoder.decode(DispatchRuntimeEvent.self, from: data) else { continue }
+            guard event.sessionID == session.sessionID else { continue }
+            guard let agentUUID = UUID(uuidString: event.agentID) else { continue }
+            guard let index = session.agentWindows.firstIndex(where: { $0.id == agentUUID }) else { continue }
+
+            if let mappedState = mappedAgentState(from: event.state), session.agentWindows[index].state != mappedState {
+                session.agentWindows[index].state = mappedState
+                didChange = true
+                if mappedState == .needsInput || mappedState == .blocked {
+                    let reason = event.reason ?? "Action needed"
+                    setStatus("\(session.agentWindows[index].name): \(reason)", level: .info)
+                }
+            }
+        }
+
+        if didChange {
+            store.saveActiveSession(session)
+            refreshActiveAgents()
+        }
+    }
+
+    private func mappedAgentState(from runtimeState: String) -> AgentState? {
+        switch runtimeState {
+        case "running":
+            return .running
+        case "needs_input":
+            return .needsInput
+        case "blocked", "error":
+            return .blocked
+        case "done":
+            return .done
+        default:
+            return nil
+        }
     }
 
     private func autoAttachSnapshots(snapshots: [TerminalWindowSnapshot], silent: Bool) throws {

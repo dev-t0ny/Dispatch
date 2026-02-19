@@ -21,7 +21,7 @@ Dispatch is a macOS menu bar mission control for multi-agent development session
 - Launches mixed tool sessions in one click (for example `4x Claude + 2x Codex`).
 - Supports per-terminal directories in the same launch plan.
 - Supports multiple terminal apps: `iTerm2` and `Terminal`.
-- Lets you target specific displays for tiling.
+- Uses all detected displays for tiling.
 - Includes a live display preview while selecting screens.
 - Shows live monitor thumbnails and current terminal window layout in the screen selector.
 - Includes an active terminals board with focus + state controls.
@@ -45,6 +45,13 @@ Run locally:
 swift run
 ```
 
+Build helper CLIs:
+
+```bash
+swift build --product dispatch-agent
+swift build --product dispatchctl
+```
+
 ## Build a Distributable App
 
 ```bash
@@ -58,13 +65,23 @@ Artifacts:
 
 ## How Launching Works
 
-For each launch row, Dispatch runs:
+For each launch row, Dispatch runs a wrapper command:
 
 ```bash
-zsh -lc 'cd <row-directory> && exec <tool-command>'
+dispatch-agent --tool <tool> --session-id <id> --agent-id <id> --command "<tool-command>"
 ```
 
 Then windows are tiled across your selected displays.
+
+## Human Handoff Signals
+
+From any tracked terminal, you can explicitly ask for attention:
+
+```bash
+dispatchctl state needs_input --reason "Need approval before applying migration"
+```
+
+`dispatchctl` reads `DISPATCH_SESSION_ID` and `DISPATCH_AGENT_ID` automatically when launched by Dispatch.
 
 ## Contributing
 

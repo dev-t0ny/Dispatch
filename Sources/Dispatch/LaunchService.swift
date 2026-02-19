@@ -37,14 +37,24 @@ final class LaunchService {
         }
 
         let plans = try validatedLaunchPlans(from: request.launchItems)
+        let sessionID = UUID().uuidString
+        let wrapperPath = resolveDispatchAgentPath()
         var agents: [AgentWindow] = []
 
         for plan in plans {
-            let launchCommand = makeLaunchCommand(directory: plan.directory, toolCommand: plan.tool.command)
+            let agentID = UUID()
+            let launchCommand = makeLaunchCommand(
+                directory: plan.directory,
+                toolID: plan.tool.id,
+                toolCommand: plan.tool.command,
+                sessionID: sessionID,
+                agentID: agentID.uuidString,
+                wrapperPath: wrapperPath
+            )
             let windowID = try controller.launchWindow(command: launchCommand)
 
             let agent = AgentWindow(
-                id: UUID(),
+                id: agentID,
                 windowID: windowID,
                 toolID: plan.tool.id,
                 directory: plan.directory,
@@ -68,7 +78,7 @@ final class LaunchService {
             try controller.setBounds(windowID: agent.windowID, bounds: bounds)
         }
 
-        return ActiveSession(agentWindows: agents, request: request)
+        return ActiveSession(sessionID: sessionID, agentWindows: agents, request: request)
     }
 
     func close(session: ActiveSession) throws {
@@ -189,8 +199,39 @@ final class LaunchService {
         return plans
     }
 
-    private func makeLaunchCommand(directory: String, toolCommand: String) -> String {
-        let shellBody = "cd \(Shell.singleQuote(directory)) && exec \(toolCommand)"
+    private func makeLaunchCommand(
+        directory: String,
+        toolID: String,
+        toolCommand: String,
+        sessionID: String,
+        agentID: String,
+        wrapperPath: String?
+    ) -> String {
+        let envPrefix = "DISPATCH_SESSION_ID=\(Shell.singleQuote(sessionID)) DISPATCH_AGENT_ID=\(Shell.singleQuote(agentID)) DISPATCH_TOOL=\(Shell.singleQuote(toolID))"
+
+        let wrappedCommand: String
+        if let wrapperPath {
+            let escapedWrapper = Shell.singleQuote(wrapperPath)
+            let escapedCommand = Shell.singleQuote(toolCommand)
+            wrappedCommand = "\(escapedWrapper) --tool \(Shell.singleQuote(toolID)) --session-id \(Shell.singleQuote(sessionID)) --agent-id \(Shell.singleQuote(agentID)) --command \(escapedCommand)"
+        } else {
+            wrappedCommand = toolCommand
+        }
+
+        let shellBody = "cd \(Shell.singleQuote(directory)) && \(envPrefix) exec \(wrappedCommand)"
         return "zsh -lc \(Shell.singleQuote(shellBody))"
+    }
+
+    private func resolveDispatchAgentPath() -> String? {
+        if let bundled = Bundle.main.path(forAuxiliaryExecutable: "dispatch-agent"), FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+
+        let executablePath = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("dispatch-agent").path
+        if FileManager.default.isExecutableFile(atPath: executablePath) {
+            return executablePath
+        }
+
+        return Shell.executablePath("dispatch-agent")
     }
 }

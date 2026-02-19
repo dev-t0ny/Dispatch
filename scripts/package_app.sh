@@ -9,6 +9,8 @@ RESOURCES_DIR="$APP_DIR/Contents/Resources"
 PLIST_PATH="$APP_DIR/Contents/Info.plist"
 TEMPLATE_PLIST="$ROOT_DIR/packaging/Info.plist"
 RELEASE_BIN="$ROOT_DIR/.build/arm64-apple-macosx/release/Dispatch"
+AGENT_BIN="$ROOT_DIR/.build/arm64-apple-macosx/release/dispatch-agent"
+CTL_BIN="$ROOT_DIR/.build/arm64-apple-macosx/release/dispatchctl"
 ZIP_PATH="$DIST_DIR/Dispatch-macos.zip"
 
 mkdir -p "$DIST_DIR"
@@ -19,6 +21,12 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$RELEASE_BIN" "$MACOS_DIR/Dispatch"
+if [ -f "$AGENT_BIN" ]; then
+  cp "$AGENT_BIN" "$MACOS_DIR/dispatch-agent"
+fi
+if [ -f "$CTL_BIN" ]; then
+  cp "$CTL_BIN" "$MACOS_DIR/dispatchctl"
+fi
 cp "$TEMPLATE_PLIST" "$PLIST_PATH"
 
 codesign --force --sign - "$APP_DIR"
