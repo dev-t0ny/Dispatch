@@ -135,19 +135,12 @@ struct DispatchMenuView: View {
             } else {
                 ScreenSelectionMap(
                     screens: viewModel.availableScreens,
-                    selectedIDs: viewModel.selectedScreenIDs,
                     totalWindows: viewModel.totalInstances,
-                    layout: viewModel.layout,
-                    onToggle: { screenID in
-                        viewModel.toggleScreen(screenID)
-                    },
-                    onSetSelection: { selectedIDs in
-                        viewModel.setSelectedScreens(selectedIDs)
-                    }
+                    layout: viewModel.layout
                 )
                 .frame(height: 180)
 
-                Text("Click to toggle a display. Drag to select a group. Layout and monitor preview update live.")
+                Text("Live monitor preview. Dispatch uses all detected screens automatically.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -396,16 +389,11 @@ private extension Color {
 
 private struct ScreenSelectionMap: View {
     let screens: [DisplayTarget]
-    let selectedIDs: Set<String>
     let totalWindows: Int
     let layout: LayoutPreset
-    let onToggle: (String) -> Void
-    let onSetSelection: (Set<String>) -> Void
 
     private let refreshTimer = Timer.publish(every: 1.25, on: .main, in: .common).autoconnect()
 
-    @State private var dragStart: CGPoint?
-    @State private var dragCurrent: CGPoint?
     @State private var snapshots: [String: NSImage] = [:]
 
     var body: some View {
@@ -418,52 +406,47 @@ private struct ScreenSelectionMap: View {
 
                 ForEach(Array(screens.enumerated()), id: \.element.id) { index, screen in
                     if let rect = screenRects[screen.id] {
-                        Button {
-                            onToggle(screen.id)
-                        } label: {
-                            ZStack {
-                                if let snapshot = snapshots[screen.id] {
-                                    Image(nsImage: snapshot)
-                                        .resizable()
-                                        .scaledToFill()
-                                } else {
-                                    LinearGradient(
-                                        colors: [Color.gray.opacity(0.28), Color.gray.opacity(0.16)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                }
-
-                                Rectangle()
-                                    .fill(selectedIDs.contains(screen.id) ? Color.accentColor.opacity(0.24) : Color.black.opacity(0.30))
-
-                                VStack(spacing: 2) {
-                                    Text("Display \(index + 1)")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(.white)
-                                    Text(sizeLabel(screen))
-                                        .font(.caption2)
-                                        .foregroundStyle(.white.opacity(0.85))
-                                }
-                                .padding(4)
+                        ZStack {
+                            if let snapshot = snapshots[screen.id] {
+                                Image(nsImage: snapshot)
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                LinearGradient(
+                                    colors: [Color.gray.opacity(0.28), Color.gray.opacity(0.16)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
                             }
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(selectedIDs.contains(screen.id) ? Color.accentColor : Color.white.opacity(0.55), lineWidth: 1)
-                            )
-                            .overlay(alignment: .topLeading) {
-                                if let allocated = allocationMap[screen.id], allocated > 0 {
-                                    Text("\(allocated)")
-                                        .font(.caption2.weight(.semibold))
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 2)
-                                        .background(.thinMaterial, in: Capsule())
-                                        .padding(5)
-                                }
+
+                            Rectangle()
+                                .fill(Color.black.opacity(0.30))
+
+                            VStack(spacing: 2) {
+                                Text("Display \(index + 1)")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                Text(sizeLabel(screen))
+                                    .font(.caption2)
+                                    .foregroundStyle(.white.opacity(0.85))
+                            }
+                            .padding(4)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.white.opacity(0.55), lineWidth: 1)
+                        )
+                        .overlay(alignment: .topLeading) {
+                            if let allocated = allocationMap[screen.id], allocated > 0 {
+                                Text("\(allocated)")
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(.thinMaterial, in: Capsule())
+                                    .padding(5)
                             }
                         }
-                        .buttonStyle(.plain)
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
                     }
@@ -478,49 +461,7 @@ private struct ScreenSelectionMap: View {
                     }
                 }
 
-                if let dragRect = dragRect {
-                    Rectangle()
-                        .fill(Color.accentColor.opacity(0.12))
-                        .overlay(
-                            Rectangle()
-                                .stroke(Color.accentColor.opacity(0.65), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                        )
-                        .frame(width: dragRect.width, height: dragRect.height)
-                        .position(x: dragRect.midX, y: dragRect.midY)
-                }
             }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 4)
-                    .onChanged { value in
-                        dragStart = dragStart ?? value.startLocation
-                        dragCurrent = value.location
-
-                        guard let dragRect else { return }
-                        let intersecting = Set(screenRects.compactMap { entry in
-                            dragRect.intersects(entry.value) ? entry.key : nil
-                        })
-                        if !intersecting.isEmpty {
-                            onSetSelection(intersecting)
-                        }
-                    }
-                    .onEnded { value in
-                        defer {
-                            dragStart = nil
-                            dragCurrent = nil
-                        }
-
-                        guard let start = dragStart else { return }
-                        let finish = value.location
-                        let finalRect = normalizedRect(start: start, end: finish)
-                        let intersecting = Set(screenRects.compactMap { entry in
-                            finalRect.intersects(entry.value) ? entry.key : nil
-                        })
-                        if !intersecting.isEmpty {
-                            onSetSelection(intersecting)
-                        }
-                    }
-            )
             .onAppear {
                 refreshSnapshots()
             }
@@ -538,14 +479,9 @@ private struct ScreenSelectionMap: View {
         let rect: CGRect
     }
 
-    private var selectedScreens: [DisplayTarget] {
-        let chosen = screens.filter { selectedIDs.contains($0.id) }
-        return chosen.isEmpty ? screens : chosen
-    }
-
     private var allocationMap: [String: Int] {
         guard totalWindows > 0 else { return [:] }
-        let targets = selectedScreens
+        let targets = screens
         guard !targets.isEmpty else { return [:] }
 
         let areas = targets.map { max(1, $0.geometry.visibleFrame.width * $0.geometry.visibleFrame.height) }
@@ -578,7 +514,7 @@ private struct ScreenSelectionMap: View {
 
     private func previewCells(screenRects: [String: CGRect]) -> [PreviewCell] {
         var cells: [PreviewCell] = []
-        for screen in selectedScreens {
+        for screen in screens {
             guard let container = screenRects[screen.id] else { continue }
             let count = allocationMap[screen.id] ?? 0
             guard count > 0 else { continue }
@@ -635,20 +571,6 @@ private struct ScreenSelectionMap: View {
         }
 
         snapshots = updated
-    }
-
-    private var dragRect: CGRect? {
-        guard let start = dragStart, let current = dragCurrent else { return nil }
-        return normalizedRect(start: start, end: current)
-    }
-
-    private func normalizedRect(start: CGPoint, end: CGPoint) -> CGRect {
-        CGRect(
-            x: min(start.x, end.x),
-            y: min(start.y, end.y),
-            width: abs(start.x - end.x),
-            height: abs(start.y - end.y)
-        )
     }
 
     private func sizeLabel(_ screen: DisplayTarget) -> String {
