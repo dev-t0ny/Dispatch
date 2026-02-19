@@ -114,7 +114,14 @@ final class LaunchService {
             throw DispatchError.system("\(terminal.label) is not installed.")
         }
 
-        let existing = try controller.listWindowSnapshots().map(\.windowID).filter { !windowIDs.contains($0) }
+        let snapshots: [TerminalWindowSnapshot]
+        do {
+            snapshots = try controller.listWindowSnapshots()
+        } catch {
+            return []
+        }
+
+        let existing = snapshots.map(\.windowID).filter { !windowIDs.contains($0) }
         let now = Date()
         return existing.enumerated().map { index, windowID in
             AgentWindow(
@@ -143,7 +150,11 @@ final class LaunchService {
             return []
         }
 
-        return try controller.listWindowSnapshots()
+        do {
+            return try controller.listWindowSnapshots()
+        } catch {
+            return []
+        }
     }
 
     private struct LaunchPlan {
