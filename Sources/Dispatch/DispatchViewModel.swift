@@ -458,7 +458,7 @@ final class DispatchViewModel: ObservableObject {
         }
     }
 
-    /// Show or hide transparent overlays based on current agent states and bounds.
+    /// Show or hide border overlays based on current agent states and window bounds.
     private func syncOverlays() {
         let session = store.loadActiveSession()
         guard let session else {
@@ -466,12 +466,12 @@ final class DispatchViewModel: ObservableObject {
             return
         }
 
+        // Tell the overlay controller which terminal app to track via CG.
+        overlayController.terminalAppName = selectedTerminal.cgOwnerName
+
         let snapshotMap = Dictionary(
             uniqueKeysWithValues: liveWindowSnapshots.map { ($0.windowID, $0) }
         )
-
-        // Track which agents should have overlays.
-        var activeOverlayIDs: Set<UUID> = []
 
         for agent in session.agentWindows {
             let shouldOverlay = agent.state == .needsInput || agent.state == .blocked
@@ -484,18 +484,10 @@ final class DispatchViewModel: ObservableObject {
                     bottom: snapshot.bottom
                 )
                 overlayController.showOverlay(for: agent.id, windowID: agent.windowID, bounds: bounds, state: agent.state)
-                activeOverlayIDs.insert(agent.id)
             } else {
                 overlayController.hideOverlay(for: agent.id)
             }
         }
-
-        // Hide overlays for agents that no longer exist.
-        let allAgentIDs = Set(session.agentWindows.map(\.id))
-        for agent in session.agentWindows where !activeOverlayIDs.contains(agent.id) {
-            overlayController.hideOverlay(for: agent.id)
-        }
-        _ = allAgentIDs  // suppress unused warning
     }
 
     private func autoAttachSnapshots(snapshots: [TerminalWindowSnapshot], silent: Bool) throws {

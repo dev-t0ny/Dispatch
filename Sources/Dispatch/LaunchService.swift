@@ -115,13 +115,18 @@ final class LaunchService: @unchecked Sendable {
         return try? controller.readSessionContent(windowID: windowID, lineCount: lineCount)
     }
 
-    /// Detect which running agents are idle / waiting for input using the
-    /// terminal's native API (e.g. iTerm2 shell integration).
-    /// Returns the set of agent IDs whose sessions appear idle.
+    /// Known tool IDs that are TUI apps where idle detection makes sense.
+    private static let monitoredToolIDs: Set<String> = ["claude", "codex", "opencode"]
+
+    /// Detect which running agents are idle / waiting for input using TTY
+    /// process monitoring. Only checks Dispatch-launched agents running
+    /// known TUI tools — skips "external" or unknown terminals.
     func detectIdleAgents(agents: [AgentWindow], terminal: TerminalApp) -> Set<UUID> {
         guard let controller = controllers[terminal] else { return [] }
 
-        let runningAgents = agents.filter { $0.state == .running }
+        let runningAgents = agents.filter {
+            $0.state == .running && Self.monitoredToolIDs.contains($0.toolID)
+        }
         guard !runningAgents.isEmpty else { return [] }
 
         let windowIDs = runningAgents.map(\.windowID)

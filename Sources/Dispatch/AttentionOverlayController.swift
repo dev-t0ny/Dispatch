@@ -13,33 +13,21 @@ final class AttentionOverlayController {
     /// One overlay per agent (keyed by agent UUID).
     private var overlays: [UUID: NSWindow] = [:]
 
-    /// Mapping of agent UUID → terminal window ID for position tracking.
+    /// Mapping of agent UUID -> AppleScript window ID for position tracking.
     private var agentWindowIDs: [UUID: Int] = [:]
 
-    /// Timer for fast position tracking (independent of the 1.5s detection cycle).
+    /// The terminal app name to filter CG windows (e.g. "iTerm2", "Terminal").
+    var terminalAppName: String = "iTerm2"
+
+    /// Timer for fast position tracking.
     private var trackingTimer: Timer?
 
-    /// Start a fast timer that updates overlay positions by reading window
-    /// bounds from Core Graphics (no AppleScript overhead).
-    func startTracking() {
-        guard trackingTimer == nil else { return }
-        trackingTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateOverlayPositions()
-            }
-        }
-    }
+    // MARK: - Public API
 
-    /// Stop the position tracking timer.
-    func stopTracking() {
-        trackingTimer?.invalidate()
-        trackingTimer = nil
-    }
-
-    /// Show or update a border overlay for the given agent, positioned around
-    /// the terminal window bounds.
+    /// Show or update a border overlay for the given agent.
     func showOverlay(for agentID: UUID, windowID: Int, bounds: WindowBounds, state: AgentState) {
         agentWindowIDs[agentID] = windowID
+
         let color: NSColor
         switch state {
         case .needsInput:
@@ -51,13 +39,7 @@ final class AttentionOverlayController {
             return
         }
 
-        let inset = Int(Self.borderWidth) + 1
-        let frame = NSRect(
-            x: bounds.left - inset,
-            y: screenFlippedY(top: bounds.top, bottom: bounds.bottom) - inset,
-            width: bounds.right - bounds.left + (inset * 2),
-            height: bounds.bottom - bounds.top + (inset * 2)
-        )
+        let frame = overlayFrame(for: bounds)
 
         if let existing = overlays[agentID] {
             existing.setFrame(frame, display: false, animate: false)
@@ -92,21 +74,16 @@ final class AttentionOverlayController {
         overlay.orderFront(nil)
         overlays[agentID] = overlay
 
-        // Start fast position tracking when first overlay appears.
         startTracking()
     }
 
-    /// Hide and remove the overlay for a specific agent.
     func hideOverlay(for agentID: UUID) {
         guard let overlay = overlays.removeValue(forKey: agentID) else { return }
         overlay.orderOut(nil)
         agentWindowIDs.removeValue(forKey: agentID)
-
-        // Stop tracking when no overlays are visible.
         if overlays.isEmpty { stopTracking() }
     }
 
-    /// Hide all overlays (e.g. when session is closed).
     func hideAll() {
         for (_, overlay) in overlays {
             overlay.orderOut(nil)
@@ -118,89 +95,91 @@ final class AttentionOverlayController {
 
     // MARK: - Fast Position Tracking
 
-    /// Query Core Graphics for current window positions and reposition overlays.
-    /// This runs on a fast timer (~7fps) so overlays track window dragging smoothly.
+    private func startTracking() {
+        guard trackingTimer == nil else { return }
+        trackingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateOverlayPositions()
+            }
+        }
+    }
+
+    private func stopTracking() {
+        trackingTimer?.invalidate()
+        trackingTimer = nil
+    }
+
+    /// Read current window positions from Core Graphics and reposition overlays.
     private func updateOverlayPositions() {
         guard !overlays.isEmpty else { return }
 
-        // Get all on-screen windows from CG. This is a lightweight C call —
-        // much faster than AppleScript.
+        // Build a lookup of CG window ID -> bounds for the terminal app.
+        let cgWindows = terminalWindowBounds()
+
+        for (agentID, overlay) in overlays {
+            guard let windowID = agentWindowIDs[agentID],
+                  let cgRect = cgWindows[windowID] else { continue }
+
+            let frame = overlayFrame(forCGRect: cgRect)
+            if overlay.frame != frame {
+                overlay.setFrame(frame, display: false, animate: false)
+            }
+        }
+    }
+
+    /// Get all on-screen windows for the terminal app via Core Graphics.
+    /// Returns [CG window number: CGRect in screen coordinates (top-left origin)].
+    private func terminalWindowBounds() -> [Int: CGRect] {
         guard let windowList = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
-        ) as? [[String: Any]] else { return }
+        ) as? [[String: Any]] else { return [:] }
 
-        // Build a lookup: CG window number → bounds rect.
-        // Note: CG window IDs and AppleScript window IDs may differ.
-        // We match on window bounds from our last known snapshot to correlate.
-        var cgBounds: [CGWindowID: CGRect] = [:]
+        var result: [Int: CGRect] = [:]
         for entry in windowList {
-            guard let wid = entry[kCGWindowNumber as String] as? CGWindowID,
-                  let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
-                  let x = boundsDict["X"] as? CGFloat,
-                  let y = boundsDict["Y"] as? CGFloat,
-                  let w = boundsDict["Width"] as? CGFloat,
-                  let h = boundsDict["Height"] as? CGFloat else { continue }
-            cgBounds[wid] = CGRect(x: x, y: y, width: w, height: h)
+            guard let owner = entry[kCGWindowOwnerName as String] as? String,
+                  owner == terminalAppName,
+                  let wid = entry[kCGWindowNumber as String] as? Int,
+                  let boundsDict = entry[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = boundsDict["X"],
+                  let y = boundsDict["Y"],
+                  let w = boundsDict["Width"],
+                  let h = boundsDict["Height"],
+                  w > 50, h > 50  // filter out sub-windows (tab bar, etc.)
+            else { continue }
+
+            result[wid] = CGRect(x: x, y: y, width: w, height: h)
         }
-
-        // For each overlay, find the matching CG window and update position.
-        for (agentID, overlay) in overlays {
-            guard let terminalWindowID = agentWindowIDs[agentID] else { continue }
-
-            // Try direct CG window ID match first.
-            if let rect = cgBounds[CGWindowID(terminalWindowID)] {
-                repositionOverlay(overlay, toWindowRect: rect)
-                continue
-            }
-
-            // If no direct match (CG IDs can differ from AppleScript IDs),
-            // find the closest match by comparing against overlay's current position.
-            let overlayFrame = overlay.frame
-            let currentCenter = CGPoint(
-                x: overlayFrame.midX,
-                y: NSScreen.screens.first.map { $0.frame.height - overlayFrame.midY } ?? overlayFrame.midY
-            )
-
-            var bestMatch: CGRect?
-            var bestDist = CGFloat.greatestFiniteMagnitude
-            for (_, rect) in cgBounds {
-                let center = CGPoint(x: rect.midX, y: rect.midY)
-                let dist = hypot(center.x - currentCenter.x, center.y - currentCenter.y)
-                if dist < bestDist && dist < 50 { // within 50pt
-                    bestDist = dist
-                    bestMatch = rect
-                }
-            }
-
-            if let rect = bestMatch {
-                repositionOverlay(overlay, toWindowRect: rect)
-            }
-        }
+        return result
     }
 
-    /// Reposition an overlay window to frame a CG window rect.
-    /// The CG rect uses top-left origin; we convert to AppKit bottom-left.
-    private func repositionOverlay(_ overlay: NSWindow, toWindowRect cgRect: CGRect) {
+    // MARK: - Geometry Helpers
+
+    /// Build overlay NSRect from AppleScript-style WindowBounds (top-left origin).
+    private func overlayFrame(for bounds: WindowBounds) -> NSRect {
         let inset = Self.borderWidth + 1
-        let appKitY = screenFlippedY(
-            top: Int(cgRect.minY),
-            bottom: Int(cgRect.maxY)
+        let appKitY = CGFloat(screenFlippedY(top: bounds.top, bottom: bounds.bottom))
+        return NSRect(
+            x: CGFloat(bounds.left) - inset,
+            y: appKitY - inset,
+            width: CGFloat(bounds.right - bounds.left) + (inset * 2),
+            height: CGFloat(bounds.bottom - bounds.top) + (inset * 2)
         )
-        let frame = NSRect(
-            x: CGFloat(Int(cgRect.minX)) - inset,
-            y: CGFloat(appKitY) - inset,
+    }
+
+    /// Build overlay NSRect from a CG rect (top-left origin).
+    private func overlayFrame(forCGRect cgRect: CGRect) -> NSRect {
+        let inset = Self.borderWidth + 1
+        let appKitY = CGFloat(screenFlippedY(top: Int(cgRect.minY), bottom: Int(cgRect.maxY)))
+        return NSRect(
+            x: cgRect.minX - inset,
+            y: appKitY - inset,
             width: cgRect.width + (inset * 2),
             height: cgRect.height + (inset * 2)
         )
-
-        if overlay.frame != frame {
-            overlay.setFrame(frame, display: false, animate: false)
-        }
     }
 
-    /// Convert from AppleScript/Carbon bounds (top-left origin) to AppKit
-    /// screen coordinates (bottom-left origin).
+    /// Convert from top-left origin to AppKit bottom-left origin.
     private func screenFlippedY(top: Int, bottom: Int) -> Int {
         guard let screen = NSScreen.screens.first else { return top }
         let screenHeight = Int(screen.frame.height)
@@ -210,8 +189,6 @@ final class AttentionOverlayController {
 
 // MARK: - Border-only NSView
 
-/// Draws only a rounded-rect border stroke — no fill. This gives the thin
-/// colored frame effect around the terminal window.
 private class BorderView: NSView {
     var borderColor: NSColor = .orange
     var borderWidth: CGFloat = 3
@@ -232,7 +209,6 @@ private class BorderView: NSView {
         let rect = bounds.insetBy(dx: inset, dy: inset)
         let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
         path.lineWidth = borderWidth
-
         borderColor.setStroke()
         path.stroke()
     }

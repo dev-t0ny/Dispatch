@@ -35,6 +35,16 @@ enum TerminalApp: String, CaseIterable, Codable, Identifiable {
             return "com.apple.Terminal"
         }
     }
+
+    /// The owner name as reported by CGWindowListCopyWindowInfo.
+    var cgOwnerName: String {
+        switch self {
+        case .iTerm2:
+            return "iTerm2"
+        case .terminal:
+            return "Terminal"
+        }
+    }
 }
 
 enum LayoutPreset: String, CaseIterable, Codable, Identifiable {
