@@ -23,7 +23,11 @@ final class LaunchService: @unchecked Sendable {
         tools
     }
 
-    func launch(request: LaunchRequest, screens: [ScreenGeometry]) throws -> ActiveSession {
+    func launch(
+        request: LaunchRequest,
+        screens: [ScreenGeometry],
+        onProgress: (@Sendable (Int, Int) -> Void)? = nil
+    ) async throws -> ActiveSession {
         guard request.totalCount > 0 else {
             throw DispatchError.validation("Pick at least one tool instance.")
         }
@@ -40,8 +44,11 @@ final class LaunchService: @unchecked Sendable {
         let sessionID = UUID().uuidString
         let wrapperPath = resolveDispatchAgentPath()
         var agents: [AgentWindow] = []
+        let totalCount = plans.count
 
-        for plan in plans {
+        for (index, plan) in plans.enumerated() {
+            try Task.checkCancellation()
+
             let agentID = UUID()
             let launchCommand = try makeLaunchCommand(
                 directory: plan.directory,
@@ -74,13 +81,15 @@ final class LaunchService: @unchecked Sendable {
                 // Identity decoration should never block terminal launch.
             }
             agents.append(agent)
-            usleep(300_000)
+            onProgress?(index + 1, totalCount)
+
+            // Yield to the cooperative thread pool instead of blocking the thread.
+            try await Task.sleep(nanoseconds: 300_000_000)
         }
 
         let targetBounds = tiler.bounds(for: agents.count, layout: request.layout, screens: screens)
-        for (agent, bounds) in zip(agents, targetBounds) {
-            try controller.setBounds(windowID: agent.windowID, bounds: bounds)
-        }
+        let windowBounds = zip(agents, targetBounds).map { (windowID: $0.windowID, bounds: $1) }
+        try controller.setBoundsAll(windowBounds: windowBounds)
 
         return ActiveSession(sessionID: sessionID, agentWindows: agents, request: request)
     }
@@ -90,9 +99,7 @@ final class LaunchService: @unchecked Sendable {
             throw DispatchError.system("No launcher configured for \(session.request.terminal.label).")
         }
 
-        for agent in session.agentWindows {
-            try controller.closeWindow(windowID: agent.windowID)
-        }
+        try controller.closeAll(windowIDs: session.agentWindows.map(\.windowID))
     }
 
     func focus(windowID: Int, terminal: TerminalApp) throws {
@@ -112,18 +119,24 @@ final class LaunchService: @unchecked Sendable {
     /// Known tool IDs that are TUI apps where idle detection makes sense.
     private static let monitoredToolIDs: Set<String> = ["claude", "codex", "opencode"]
 
-    /// Detect which running agents are idle / waiting for input using TTY
-    /// process monitoring. Only checks Dispatch-launched agents running
-    /// known TUI tools — skips "external" or unknown terminals.
+    /// Agent states that should be checked for idle detection. We include
+    /// `.needsInput` so that agents already marked idle stay in the idle set
+    /// and don't oscillate back to `.running` on the next refresh cycle.
+    private static let idleCheckStates: Set<AgentState> = [.running, .needsInput]
+
+    /// Detect which agents are idle / waiting for input using TTY
+    /// process monitoring. Checks both `.running` and `.needsInput` agents
+    /// to prevent state oscillation.
     func detectIdleAgents(agents: [AgentWindow], terminal: TerminalApp) -> Set<UUID> {
         guard let controller = controllers[terminal] else { return [] }
 
-        let runningAgents = agents.filter {
-            $0.state == .running && Self.monitoredToolIDs.contains($0.toolID)
+        let checkableAgents = agents.filter {
+            Self.idleCheckStates.contains($0.state) &&
+            Self.monitoredToolIDs.contains($0.toolID)
         }
-        guard !runningAgents.isEmpty else { return [] }
+        guard !checkableAgents.isEmpty else { return [] }
 
-        let windowIDs = runningAgents.map(\.windowID)
+        let windowIDs = checkableAgents.map(\.windowID)
         let idleWindowIDs: Set<Int>
         do {
             idleWindowIDs = try controller.detectIdleWindowIDs(among: windowIDs)
@@ -135,46 +148,10 @@ final class LaunchService: @unchecked Sendable {
 
         // Map idle window IDs back to agent UUIDs.
         var result: Set<UUID> = []
-        for agent in runningAgents where idleWindowIDs.contains(agent.windowID) {
+        for agent in checkableAgents where idleWindowIDs.contains(agent.windowID) {
             result.insert(agent.id)
         }
         return result
-    }
-
-    func importExistingWindows(for terminal: TerminalApp, excluding windowIDs: Set<Int>) throws -> [AgentWindow] {
-        guard let controller = controllers[terminal] else {
-            throw DispatchError.system("No launcher configured for \(terminal.label).")
-        }
-
-        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: terminal.bundleIdentifier) != nil else {
-            throw DispatchError.system("\(terminal.label) is not installed.")
-        }
-
-        let snapshots: [TerminalWindowSnapshot]
-        do {
-            snapshots = try controller.listWindowSnapshots()
-        } catch {
-            return []
-        }
-
-        let existing = snapshots.map(\.windowID).filter { !windowIDs.contains($0) }
-        let now = Date()
-        return existing.enumerated().map { index, windowID in
-            AgentWindow(
-                id: UUID(),
-                windowID: windowID,
-                toolID: "external",
-                directory: "",
-                name: "External \(terminal.label) \(index + 1)",
-                role: "Attached",
-                objective: "Manual terminal",
-                tone: .slate,
-                slot: nil,
-                launchedAt: now,
-                state: .running,
-                lastFocusedAt: nil
-            )
-        }
     }
 
     func listWindowSnapshots(for terminal: TerminalApp) throws -> [TerminalWindowSnapshot] {

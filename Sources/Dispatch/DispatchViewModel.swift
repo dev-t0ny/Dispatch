@@ -1,11 +1,26 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 struct LaunchRow: Identifiable, Hashable {
     let id: UUID
     var toolID: String
     var directory: String
     var count: Int
+}
+
+struct LaunchProgress {
+    let launched: Int
+    let total: Int
+}
+
+/// Results gathered on a background thread for `refreshRuntimeContext`.
+private struct RuntimeSnapshot: Sendable {
+    let freshLines: [String]
+    let newByteOffset: UInt64
+    let snapshots: [TerminalWindowSnapshot]?
+    let snapshotError: String?
+    let idleAgentIDs: Set<UUID>
 }
 
 @MainActor
@@ -20,6 +35,8 @@ final class DispatchViewModel: ObservableObject {
     @Published var selectedScreenIDs: Set<String>
     @Published var activeAgents: [AgentWindow]
     @Published var liveWindowSnapshots: [TerminalWindowSnapshot]
+    @Published var launchProgress: LaunchProgress?
+    @Published var showCloseConfirmation = false
 
     let tools: [ToolDefinition]
 
@@ -28,6 +45,12 @@ final class DispatchViewModel: ObservableObject {
     private let overlayController = AttentionOverlayController()
     private var lastRuntimeSyncError: String?
     private var eventLogByteOffset: UInt64
+    /// Guards against overlapping background refresh cycles.
+    private var isRefreshing = false
+    /// The currently running launch task (for cancellation support).
+    private var launchTask: Task<Void, Never>?
+    /// Auto-dismiss timer for status messages.
+    private var statusDismissTask: Task<Void, Never>?
 
     init(launchService: LaunchService = LaunchService(), store: SessionStore = SessionStore()) {
         self.launchService = launchService
@@ -53,7 +76,7 @@ final class DispatchViewModel: ObservableObject {
 
         refreshActiveAgents()
         primeEventCursor()
-        refreshRuntimeContext(silent: true)
+        Task { await refreshRuntimeContext(silent: true) }
     }
 
     var totalInstances: Int {
@@ -66,7 +89,9 @@ final class DispatchViewModel: ObservableObject {
 
     func addTerminal() {
         let defaultTool = tools.first?.id ?? "claude"
-        launchRows.append(LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: 1))
+        let currentTotal = totalInstances
+        launchRows.append(LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: 0))
+        distributeCount(currentTotal)
     }
 
     func setTotalInstances(_ total: Int) {
@@ -77,27 +102,28 @@ final class DispatchViewModel: ObservableObject {
             launchRows = [LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: 0)]
         }
 
-        var remaining = clampedTotal
+        distributeCount(clampedTotal)
+    }
+
+    /// Distribute the total window count evenly across all launch rows.
+    private func distributeCount(_ total: Int) {
+        guard !launchRows.isEmpty else { return }
+        let perRow = total / launchRows.count
+        let remainder = total % launchRows.count
 
         for index in launchRows.indices {
-            let assigned = min(24, remaining)
-            launchRows[index].count = assigned
-            remaining -= assigned
-        }
-
-        while remaining > 0 {
-            let defaultTool = tools.first?.id ?? "claude"
-            let assigned = min(24, remaining)
-            launchRows.append(LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: assigned))
-            remaining -= assigned
+            launchRows[index].count = perRow + (index < remainder ? 1 : 0)
         }
     }
 
     func removeRow(_ rowID: UUID) {
+        let currentTotal = totalInstances
         launchRows.removeAll(where: { $0.id == rowID })
         if launchRows.isEmpty {
-            addTerminal()
+            let defaultTool = tools.first?.id ?? "claude"
+            launchRows = [LaunchRow(id: UUID(), toolID: defaultTool, directory: Self.defaultDirectory(), count: 0)]
         }
+        distributeCount(currentTotal)
     }
 
     func updateTool(rowID: UUID, toolID: String) {
@@ -189,29 +215,76 @@ final class DispatchViewModel: ObservableObject {
     }
 
     func attachExistingWindows() {
-        refreshRuntimeContext(silent: false)
+        Task { await refreshRuntimeContext(silent: false) }
     }
 
-    func refreshRuntimeContext(silent: Bool = true) {
-        applyPendingRuntimeEvents()
+    func refreshRuntimeContext(silent: Bool = true) async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        // Capture values needed by the background closure.
+        let terminal = selectedTerminal
+        let byteOffset = eventLogByteOffset
+        let service = launchService
+        let session = store.loadActiveSession()
+
+        // --- Heavy work on a background thread ---
+        let snapshot: RuntimeSnapshot = await Task.detached {
+            // 1. Read new event log lines (file I/O).
+            let (freshLines, newOffset) = DispatchEventLog.readNewLines(fromByteOffset: byteOffset)
+
+            // 2. List terminal window snapshots (AppleScript IPC).
+            var snapshotResult: [TerminalWindowSnapshot]?
+            var snapshotError: String?
+            do {
+                snapshotResult = try service.listWindowSnapshots(for: terminal)
+            } catch {
+                snapshotError = error.localizedDescription
+            }
+
+            // 3. Detect idle agents (AppleScript + ps subprocess).
+            var idleAgentIDs: Set<UUID> = []
+            if let session {
+                idleAgentIDs = service.detectIdleAgents(
+                    agents: session.agentWindows,
+                    terminal: session.request.terminal
+                )
+            }
+
+            return RuntimeSnapshot(
+                freshLines: freshLines,
+                newByteOffset: newOffset,
+                snapshots: snapshotResult,
+                snapshotError: snapshotError,
+                idleAgentIDs: idleAgentIDs
+            )
+        }.value
+
+        // --- Apply results on the main thread using a single cached session ---
+        var cachedSession = store.loadActiveSession()
+
+        applyPendingRuntimeEvents(session: &cachedSession, freshLines: snapshot.freshLines, newByteOffset: snapshot.newByteOffset)
         refreshDisplays(preferredIDs: [])
 
-        do {
-            let snapshots = try launchService.listWindowSnapshots(for: selectedTerminal)
+        if let snapshots = snapshot.snapshots {
             liveWindowSnapshots = snapshots
-            try autoAttachSnapshots(snapshots: snapshots, silent: silent)
-            lastRuntimeSyncError = nil
-        } catch {
-            liveWindowSnapshots = []
-            let message = error.localizedDescription
-            if !silent || message != lastRuntimeSyncError {
-                setStatus(message, level: .error)
+            reconcileSessionWindows(session: &cachedSession, snapshots: snapshots)
+            if snapshot.snapshotError == nil {
+                lastRuntimeSyncError = nil
             }
-            lastRuntimeSyncError = message
+        } else {
+            liveWindowSnapshots = []
+            if let message = snapshot.snapshotError {
+                if !silent || message != lastRuntimeSyncError {
+                    setStatus(message, level: .error)
+                }
+                lastRuntimeSyncError = message
+            }
         }
 
-        scanForPrompts()
-        syncOverlays()
+        scanForPrompts(session: &cachedSession, idleAgentIDs: snapshot.idleAgentIDs)
+        syncOverlays(session: cachedSession)
     }
 
     func focusAgent(_ agentID: UUID) {
@@ -232,6 +305,10 @@ final class DispatchViewModel: ObservableObject {
 
             session.agentWindows[index].lastFocusedAt = Date()
             session.focusHistory.append(agent.id)
+            // Cap history to prevent unbounded growth in JSON serialization.
+            if session.focusHistory.count > 100 {
+                session.focusHistory = Array(session.focusHistory.suffix(100))
+            }
             store.saveActiveSession(session)
             refreshActiveAgents()
         } catch {
@@ -293,22 +370,39 @@ final class DispatchViewModel: ObservableObject {
         // isExecutableAvailable, executablePath) don't freeze the UI.
         let service = launchService
         let toolsList = tools
-        Task.detached { [store] in
+        launchTask = Task.detached { [store] in
             do {
-                let session = try service.launch(request: request, screens: screens)
+                let session = try await service.launch(request: request, screens: screens) { launched, total in
+                    Task { @MainActor in
+                        self.launchProgress = LaunchProgress(launched: launched, total: total)
+                    }
+                }
                 await MainActor.run {
+                    self.launchProgress = nil
                     store.saveActiveSession(session)
                     store.saveLastLaunch(request)
                     self.refreshActiveAgents()
-                    self.refreshRuntimeContext(silent: true)
                     self.setStatus("Launched \(request.summary(using: toolsList)) via \(request.terminal.label).", level: .success)
+                }
+                await self.refreshRuntimeContext(silent: true)
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.launchProgress = nil
+                    self.setStatus("Launch cancelled.", level: .info)
                 }
             } catch {
                 await MainActor.run {
+                    self.launchProgress = nil
                     self.setStatus(error.localizedDescription, level: .error)
                 }
             }
         }
+    }
+
+    func cancelLaunch() {
+        launchTask?.cancel()
+        launchTask = nil
+        launchProgress = nil
     }
 
     private func apply(request: LaunchRequest) {
@@ -340,18 +434,42 @@ final class DispatchViewModel: ObservableObject {
             terminal: selectedTerminal,
             layout: layout,
             launchItems: items,
-            screenIDs: []
+            screenIDs: Array(selectedScreenIDs)
         )
     }
 
     private func resolvedScreens(for request: LaunchRequest) -> [ScreenGeometry] {
         refreshDisplays(preferredIDs: request.screenIDs)
-        return availableScreens.map(\.geometry)
+        let selected = availableScreens.filter { selectedScreenIDs.contains($0.id) }
+        return selected.isEmpty ? availableScreens.map(\.geometry) : selected.map(\.geometry)
+    }
+
+    func toggleScreen(_ screenID: String) {
+        if selectedScreenIDs.contains(screenID) {
+            // Don't allow deselecting the last screen.
+            if selectedScreenIDs.count > 1 {
+                selectedScreenIDs.remove(screenID)
+            }
+        } else {
+            selectedScreenIDs.insert(screenID)
+        }
     }
 
     private func refreshDisplays(preferredIDs: [String]) {
-        availableScreens = ScreenGeometry.allDisplays()
-        selectedScreenIDs = Set(availableScreens.map(\.id))
+        let newScreens = ScreenGeometry.allDisplays()
+        let newIDs = Set(newScreens.map(\.id))
+        availableScreens = newScreens
+
+        if !preferredIDs.isEmpty {
+            // Restore from saved preset/request.
+            selectedScreenIDs = Set(preferredIDs).intersection(newIDs)
+        }
+
+        // If no valid selection exists (first launch, or all selected screens
+        // were disconnected), default to all screens.
+        if selectedScreenIDs.isEmpty || !selectedScreenIDs.isSubset(of: newIDs) {
+            selectedScreenIDs = newIDs
+        }
     }
 
     private static func defaultDirectory() -> String {
@@ -363,12 +481,37 @@ final class DispatchViewModel: ObservableObject {
     }
 
     private func setStatus(_ text: String, level: StatusLevel) {
-        status = StatusMessage(text: text, level: level)
+        withAnimation(.easeInOut(duration: 0.15)) {
+            status = StatusMessage(text: text, level: level)
+        }
+
+        // Auto-dismiss after a delay based on severity.
+        statusDismissTask?.cancel()
+        let seconds: UInt64 = switch level {
+            case .success: 3
+            case .info: 4
+            case .error: 6
+        }
+        statusDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                self?.status = nil
+            }
+        }
     }
 
     private func refreshActiveAgents() {
         let session = store.loadActiveSession()
-        activeAgents = session?.agentWindows ?? []
+        let newAgents = session?.agentWindows ?? []
+        // Animate only when the agent list or states actually change.
+        if newAgents.map(\.id) != activeAgents.map(\.id) || newAgents.map(\.state) != activeAgents.map(\.state) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                activeAgents = newAgents
+            }
+        } else {
+            activeAgents = newAgents
+        }
     }
 
     private func primeEventCursor() {
@@ -376,12 +519,11 @@ final class DispatchViewModel: ObservableObject {
         eventLogByteOffset = DispatchEventLog.fileSize()
     }
 
-    private func applyPendingRuntimeEvents() {
-        let (freshLines, newOffset) = DispatchEventLog.readNewLines(fromByteOffset: eventLogByteOffset)
-        eventLogByteOffset = newOffset
+    private func applyPendingRuntimeEvents(session: inout ActiveSession?, freshLines: [String], newByteOffset: UInt64) {
+        eventLogByteOffset = newByteOffset
 
         guard !freshLines.isEmpty else { return }
-        guard var session = store.loadActiveSession() else { return }
+        guard var currentSession = session else { return }
 
         var didChange = false
         let decoder = JSONDecoder()
@@ -389,22 +531,23 @@ final class DispatchViewModel: ObservableObject {
         for line in freshLines {
             guard let data = line.data(using: .utf8) else { continue }
             guard let event = try? decoder.decode(DispatchRuntimeEvent.self, from: data) else { continue }
-            guard event.sessionID == session.sessionID else { continue }
+            guard event.sessionID == currentSession.sessionID else { continue }
             guard let agentUUID = UUID(uuidString: event.agentID) else { continue }
-            guard let index = session.agentWindows.firstIndex(where: { $0.id == agentUUID }) else { continue }
+            guard let index = currentSession.agentWindows.firstIndex(where: { $0.id == agentUUID }) else { continue }
 
-            if let mappedState = mappedAgentState(from: event.state), session.agentWindows[index].state != mappedState {
-                session.agentWindows[index].state = mappedState
+            if let mappedState = mappedAgentState(from: event.state), currentSession.agentWindows[index].state != mappedState {
+                currentSession.agentWindows[index].state = mappedState
                 didChange = true
                 if mappedState == .needsInput || mappedState == .blocked {
                     let reason = event.reason ?? "Action needed"
-                    setStatus("\(session.agentWindows[index].name): \(reason)", level: .info)
+                    setStatus("\(currentSession.agentWindows[index].name): \(reason)", level: .info)
                 }
             }
         }
 
         if didChange {
-            store.saveActiveSession(session)
+            session = currentSession
+            store.saveActiveSession(currentSession)
             refreshActiveAgents()
         }
     }
@@ -424,44 +567,38 @@ final class DispatchViewModel: ObservableObject {
         }
     }
 
-    /// Scan running agents via TTY process monitoring and auto-transition to needsInput
-    /// when the tool appears idle, or back to running when it resumes work.
-    private func scanForPrompts() {
-        guard var session = store.loadActiveSession() else { return }
-        let terminal = session.request.terminal
-
-        let idleAgentIDs = launchService.detectIdleAgents(
-            agents: session.agentWindows,
-            terminal: terminal
-        )
+    /// Apply pre-computed idle detection results to agent states.
+    private func scanForPrompts(session: inout ActiveSession?, idleAgentIDs: Set<UUID>) {
+        guard var currentSession = session else { return }
 
         var didChange = false
 
-        for index in session.agentWindows.indices {
-            let agent = session.agentWindows[index]
+        for index in currentSession.agentWindows.indices {
+            let agent = currentSession.agentWindows[index]
             let isIdle = idleAgentIDs.contains(agent.id)
 
             if isIdle && agent.state == .running {
-                // Tool is idle → needs input.
-                session.agentWindows[index].state = .needsInput
+                // Tool is idle -> needs input.
+                currentSession.agentWindows[index].state = .needsInput
                 didChange = true
             } else if !isIdle && agent.state == .needsInput {
-                // Tool resumed work → back to running (auto-dismiss).
-                session.agentWindows[index].state = .running
+                // Tool resumed work -> back to running (auto-dismiss).
+                currentSession.agentWindows[index].state = .running
                 didChange = true
             }
         }
 
         if didChange {
-            store.saveActiveSession(session)
+            session = currentSession
+            store.saveActiveSession(currentSession)
             refreshActiveAgents()
         }
     }
 
     /// Show or hide border overlays based on current agent states and window bounds.
-    private func syncOverlays() {
-        let session = store.loadActiveSession()
-        guard let session else {
+    private func syncOverlays(session: ActiveSession? = nil) {
+        let resolvedSession = session ?? store.loadActiveSession()
+        guard let resolvedSession else {
             overlayController.hideAll()
             return
         }
@@ -473,7 +610,7 @@ final class DispatchViewModel: ObservableObject {
             uniqueKeysWithValues: liveWindowSnapshots.map { ($0.windowID, $0) }
         )
 
-        for agent in session.agentWindows {
+        for agent in resolvedSession.agentWindows {
             let shouldOverlay = agent.state == .needsInput || agent.state == .blocked
 
             if shouldOverlay, let snapshot = snapshotMap[agent.windowID] {
@@ -490,59 +627,25 @@ final class DispatchViewModel: ObservableObject {
         }
     }
 
-    private func autoAttachSnapshots(snapshots: [TerminalWindowSnapshot], silent: Bool) throws {
+    /// Reconcile the active session with the current terminal window list.
+    /// Removes agents whose windows have been closed. Does NOT auto-import
+    /// external windows — only windows launched by Dispatch are tracked.
+    private func reconcileSessionWindows(session: inout ActiveSession?, snapshots: [TerminalWindowSnapshot]) {
+        guard var existing = session, existing.request.terminal == selectedTerminal else {
+            refreshActiveAgents()
+            return
+        }
+
         let openIDs = Set(snapshots.map(\.windowID))
-        let session = store.loadActiveSession()
+        existing.agentWindows.removeAll(where: { !openIDs.contains($0.windowID) })
 
-        // Case 1: Active session matches the selected terminal — reconcile windows.
-        if var existing = session, existing.request.terminal == selectedTerminal {
-            existing.agentWindows.removeAll(where: { !openIDs.contains($0.windowID) })
-
-            let knownIDs = Set(existing.agentWindows.map(\.windowID))
-            let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: knownIDs)
-            if !imported.isEmpty {
-                existing.agentWindows.append(contentsOf: imported)
-                if !silent {
-                    setStatus("Detected \(imported.count) additional \(selectedTerminal.label) windows.", level: .success)
-                }
-            }
-
-            if existing.agentWindows.isEmpty {
-                store.saveActiveSession(nil)
-            } else {
-                store.saveActiveSession(existing)
-            }
-            refreshActiveAgents()
-            return
+        if existing.agentWindows.isEmpty {
+            session = nil
+            store.saveActiveSession(nil)
+        } else {
+            session = existing
+            store.saveActiveSession(existing)
         }
-
-        // Case 2: Active session exists for a *different* terminal. Show
-        // detected windows for the selected terminal in the UI without
-        // overwriting the persisted session (which preserves agent IDs,
-        // state tracking, and event log correlation for the real launch).
-        if session != nil, session?.request.terminal != selectedTerminal {
-            let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: [])
-            // Show these in the UI only — do NOT call store.saveActiveSession.
-            activeAgents = imported
-            if !silent && !imported.isEmpty {
-                setStatus("Showing \(imported.count) detected \(selectedTerminal.label) windows. Switch back to \(session!.request.terminal.label) to manage your launched session.", level: .info)
-            }
-            return
-        }
-
-        // Case 3: No active session at all — auto-import what we find.
-        let imported = try launchService.importExistingWindows(for: selectedTerminal, excluding: [])
-        guard !imported.isEmpty else {
-            refreshActiveAgents()
-            return
-        }
-
-        let request = LaunchRequest(terminal: selectedTerminal, layout: layout, launchItems: [], screenIDs: [])
-        store.saveActiveSession(ActiveSession(agentWindows: imported, request: request))
         refreshActiveAgents()
-
-        if !silent {
-            setStatus("Detected \(imported.count) existing \(selectedTerminal.label) windows.", level: .success)
-        }
     }
 }

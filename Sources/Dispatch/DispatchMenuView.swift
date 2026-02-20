@@ -26,6 +26,7 @@ struct DispatchMenuView: View {
                     .font(.caption)
                     .foregroundStyle(color(for: status.level))
                     .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
             }
 
             Divider()
@@ -36,14 +37,25 @@ struct DispatchMenuView: View {
         }
         .padding(14)
         .frame(width: 620)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.needsAttentionAgents.isEmpty)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.launchProgress != nil)
+        .animation(.easeInOut(duration: 0.15), value: viewModel.status?.text)
+        .alert("Close all launched terminals?", isPresented: $viewModel.showCloseConfirmation) {
+            Button("Close All", role: .destructive) {
+                viewModel.closeLaunched()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will close \(viewModel.activeAgents.count) terminal window(s). Running agents will be terminated.")
+        }
         .onAppear {
-            viewModel.refreshRuntimeContext(silent: true)
+            Task { await viewModel.refreshRuntimeContext(silent: true) }
         }
         .onChange(of: viewModel.selectedTerminal) { _ in
-            viewModel.refreshRuntimeContext(silent: false)
+            Task { await viewModel.refreshRuntimeContext(silent: false) }
         }
         .onReceive(runtimeRefreshTimer) { _ in
-            viewModel.refreshRuntimeContext(silent: true)
+            Task { await viewModel.refreshRuntimeContext(silent: true) }
         }
     }
 
@@ -101,19 +113,13 @@ struct DispatchMenuView: View {
                         viewModel.chooseDirectory(for: row.id)
                     }
 
-                    TextField("0", value: countBinding(for: row.id), format: .number)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 42)
-
-                    Stepper("", value: countBinding(for: row.id), in: 0...24)
-                        .labelsHidden()
-
                     Button {
                         viewModel.removeRow(row.id)
                     } label: {
                         Image(systemName: "trash")
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Remove terminal row")
                 }
             }
         }
@@ -143,11 +149,15 @@ struct DispatchMenuView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScreenSelectionMap(
-                    screens: viewModel.availableScreens
+                    screens: viewModel.availableScreens,
+                    selectedIDs: viewModel.selectedScreenIDs,
+                    onToggle: { screenID in
+                        viewModel.toggleScreen(screenID)
+                    }
                 )
                 .frame(height: 120)
 
-                Text("Display map only. Terminal detection runs in the background.")
+                Text("Click a display to select/deselect it for window placement.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -155,22 +165,47 @@ struct DispatchMenuView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 8) {
-            Button("Launch") {
-                viewModel.launchCurrent()
-            }
-            .keyboardShortcut(.return)
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button("Launch") {
+                    viewModel.launchCurrent()
+                }
+                .keyboardShortcut(.return)
+                .disabled(viewModel.launchProgress != nil)
 
-            Button("Relaunch Last") {
-                viewModel.relaunchLast()
+                Button("Relaunch Last") {
+                    viewModel.relaunchLast()
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(viewModel.launchProgress != nil)
+
+                Button("Close Launched") {
+                    if viewModel.activeAgents.isEmpty {
+                        viewModel.closeLaunched()
+                    } else {
+                        viewModel.showCloseConfirmation = true
+                    }
+                }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+
+                Button("Focus Next Alert") {
+                    viewModel.focusNextAttention()
+                }
+                .keyboardShortcut("n", modifiers: .command)
             }
 
-            Button("Close Launched") {
-                viewModel.closeLaunched()
-            }
-
-            Button("Focus Next Alert") {
-                viewModel.focusNextAttention()
+            if let progress = viewModel.launchProgress {
+                HStack(spacing: 8) {
+                    ProgressView(value: Double(progress.launched), total: Double(progress.total))
+                    Text("\(progress.launched)/\(progress.total)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Button("Cancel") {
+                        viewModel.cancelLaunch()
+                    }
+                    .controlSize(.small)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -203,6 +238,7 @@ struct DispatchMenuView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color.yellow.opacity(0.16))
                 )
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             if viewModel.activeAgents.isEmpty {
@@ -211,7 +247,7 @@ struct DispatchMenuView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    VStack(spacing: 6) {
+                    LazyVStack(spacing: 6) {
                         ForEach(viewModel.activeAgents) { agent in
                             HStack(spacing: 8) {
                                 Circle()
@@ -287,7 +323,7 @@ struct DispatchMenuView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    VStack(spacing: 6) {
+                    LazyVStack(spacing: 6) {
                         ForEach(viewModel.presets) { preset in
                             HStack(spacing: 8) {
                                 Button(preset.name) {
@@ -307,6 +343,7 @@ struct DispatchMenuView: View {
                                     Image(systemName: "trash")
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel("Delete preset")
                             }
                         }
                     }
@@ -363,17 +400,6 @@ struct DispatchMenuView: View {
             },
             set: { value in
                 viewModel.updateDirectory(rowID: rowID, directory: value)
-            }
-        )
-    }
-
-    private func countBinding(for rowID: UUID) -> Binding<Int> {
-        Binding(
-            get: {
-                viewModel.launchRows.first(where: { $0.id == rowID })?.count ?? 0
-            },
-            set: { value in
-                viewModel.updateCount(rowID: rowID, count: value)
             }
         )
     }
@@ -456,6 +482,8 @@ private extension Color {
 
 private struct ScreenSelectionMap: View {
     let screens: [DisplayTarget]
+    let selectedIDs: Set<String>
+    let onToggle: (String) -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -467,23 +495,29 @@ private struct ScreenSelectionMap: View {
 
                 ForEach(Array(screens.enumerated()), id: \.element.id) { index, screen in
                     if let rect = screenRects[screen.id] {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.gray.opacity(0.18))
+                        let isSelected = selectedIDs.contains(screen.id)
+                        Button {
+                            onToggle(screen.id)
+                        } label: {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.gray.opacity(0.10))
 
-                            VStack(spacing: 2) {
-                                Text("Display \(index + 1)")
-                                    .font(.caption2.weight(.semibold))
-                                Text(sizeLabel(screen))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                VStack(spacing: 2) {
+                                    Text("Display \(index + 1)")
+                                        .font(.caption2.weight(.semibold))
+                                    Text(sizeLabel(screen))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(4)
                             }
-                            .padding(4)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(isSelected ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: isSelected ? 2 : 1)
+                            )
                         }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.gray.opacity(0.45), lineWidth: 1)
-                        )
+                        .buttonStyle(.plain)
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
                     }

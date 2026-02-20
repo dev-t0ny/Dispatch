@@ -44,12 +44,50 @@ final class ITermController: TerminalControlling {
         _ = try runner.run(script)
     }
 
+    func setBoundsAll(windowBounds: [(windowID: Int, bounds: WindowBounds)]) throws {
+        guard !windowBounds.isEmpty else { return }
+        let statements = windowBounds.map { pair in
+            """
+                    if exists (window id \(pair.windowID)) then
+                        set bounds of window id \(pair.windowID) to {\(pair.bounds.left), \(pair.bounds.top), \(pair.bounds.right), \(pair.bounds.bottom)}
+                    end if
+            """
+        }.joined(separator: "\n")
+
+        let script = """
+        tell application "iTerm2"
+        \(statements)
+        end tell
+        """
+
+        _ = try runner.run(script)
+    }
+
     func closeWindow(windowID: Int) throws {
         let script = """
         tell application "iTerm2"
             if exists (window id \(windowID)) then
                 close (window id \(windowID))
             end if
+        end tell
+        """
+
+        _ = try runner.run(script)
+    }
+
+    func closeAll(windowIDs: [Int]) throws {
+        guard !windowIDs.isEmpty else { return }
+        let statements = windowIDs.map { wid in
+            """
+                    if exists (window id \(wid)) then
+                        close (window id \(wid))
+                    end if
+            """
+        }.joined(separator: "\n")
+
+        let script = """
+        tell application "iTerm2"
+        \(statements)
         end tell
         """
 

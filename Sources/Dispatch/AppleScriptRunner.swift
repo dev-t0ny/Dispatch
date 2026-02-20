@@ -4,10 +4,16 @@ protocol TerminalControlling {
     var app: TerminalApp { get }
     func launchWindow(command: String) throws -> Int
     func setBounds(windowID: Int, bounds: WindowBounds) throws
+    /// Set bounds for multiple windows in a single AppleScript call.
+    func setBoundsAll(windowBounds: [(windowID: Int, bounds: WindowBounds)]) throws
     func closeWindow(windowID: Int) throws
+    /// Close multiple windows in a single AppleScript call.
+    func closeAll(windowIDs: [Int]) throws
     func focusWindow(windowID: Int) throws
     func listWindowSnapshots() throws -> [TerminalWindowSnapshot]
     func applyIdentity(windowID: Int, title: String, badge: String, tone: AgentTone) throws
+    /// Get TTY device paths for the given window IDs.
+    func getWindowTTYs(windowIDs: [Int]) throws -> [Int: String]
     /// Check which window IDs have sessions that appear idle / waiting for input.
     /// Returns the set of window IDs where the session is at a shell prompt or idle.
     func detectIdleWindowIDs(among windowIDs: [Int]) throws -> Set<Int>

@@ -14,7 +14,9 @@ enum TTYMonitor {
 
     /// Threshold: if the foreground process group on a TTY has this many or
     /// fewer members, the tool is considered idle / waiting for input.
-    private static let idleThreshold = 2
+    /// Tools like Claude Code and OpenCode may keep 2-3 persistent child
+    /// processes (node runtime, LSP) even while idle, so we use 3.
+    private static let idleThreshold = 3
 
     /// Batch check: given a mapping of [identifier: ttyPath], returns the set
     /// of identifiers whose TTY appears idle.
@@ -48,7 +50,7 @@ enum TTYMonitor {
         let isForeground: Bool
     }
 
-    /// Snapshot all processes with a TTY in a single `ps` call.
+    /// Snapshot all processes with a TTY in a single `ps` call (pid, tty, stat).
     private static func snapshotProcesses() -> [ProcessInfo] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -60,12 +62,15 @@ enum TTYMonitor {
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return []
         }
 
+        // Read pipe data BEFORE waitUntilExit to avoid deadlock if the
+        // pipe buffer fills up (ps would block on write, waitUntilExit
+        // would block waiting for ps to exit).
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         guard let output = String(data: data, encoding: .utf8) else { return [] }
 
         var results: [ProcessInfo] = []
@@ -95,4 +100,5 @@ enum TTYMonitor {
 
         return results
     }
+
 }

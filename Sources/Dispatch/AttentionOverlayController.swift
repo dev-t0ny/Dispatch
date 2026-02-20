@@ -97,7 +97,7 @@ final class AttentionOverlayController {
 
     private func startTracking() {
         guard trackingTimer == nil else { return }
-        trackingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        trackingTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateOverlayPositions()
             }

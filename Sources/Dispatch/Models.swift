@@ -58,26 +58,26 @@ enum LayoutPreset: String, CaseIterable, Codable, Identifiable {
     var label: String {
         switch self {
         case .adaptive:
-            return "Adaptive"
+            return "Auto Grid"
         case .balanced:
-            return "Balanced"
+            return "2 Columns"
         case .wide:
-            return "Wide"
+            return "3 Columns"
         case .dense:
-            return "Dense"
+            return "4 Columns"
         }
     }
 
     var detail: String {
         switch self {
         case .adaptive:
-            return "Auto-fit by count"
+            return "Picks the best grid for your count"
         case .balanced:
-            return "Two-column focus"
+            return "Side-by-side, easy to read"
         case .wide:
-            return "Three-column spread"
+            return "More visible at once"
         case .dense:
-            return "Maximum windows"
+            return "Fit the most on screen"
         }
     }
 }
