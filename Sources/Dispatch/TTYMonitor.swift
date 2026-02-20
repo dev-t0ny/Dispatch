@@ -16,25 +16,6 @@ enum TTYMonitor {
     /// fewer members, the tool is considered idle / waiting for input.
     private static let idleThreshold = 2
 
-    /// Check whether the foreground process on the given TTY device appears
-    /// to be idle (waiting for user input).
-    ///
-    /// - Parameter ttyPath: The TTY device path, e.g. "/dev/ttys003".
-    /// - Returns: `true` if the session appears idle.
-    static func isIdle(ttyPath: String) -> Bool {
-        // Strip "/dev/" prefix for ps matching — ps shows "ttys003" not "/dev/ttys003"
-        let ttyName = ttyPath
-            .replacingOccurrences(of: "/dev/", with: "")
-
-        guard !ttyName.isEmpty else { return false }
-
-        // Count foreground process group members (processes with "+" in STAT)
-        // on this specific TTY.
-        let fgCount = countForegroundProcesses(tty: ttyName)
-
-        return fgCount <= idleThreshold
-    }
-
     /// Batch check: given a mapping of [identifier: ttyPath], returns the set
     /// of identifiers whose TTY appears idle.
     static func detectIdle(ttys: [String: String]) -> Set<String> {
@@ -113,10 +94,5 @@ enum TTYMonitor {
         }
 
         return results
-    }
-
-    /// Count foreground processes on a specific TTY.
-    private static func countForegroundProcesses(tty: String) -> Int {
-        snapshotProcesses().filter { $0.tty == tty && $0.isForeground }.count
     }
 }

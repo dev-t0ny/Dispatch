@@ -74,26 +74,6 @@ final class TerminalController: TerminalControlling {
         return runner.windowSnapshotsValue(from: try runner.run(script))
     }
 
-    func readSessionContent(windowID: Int, lineCount: Int) throws -> String {
-        let script = """
-        tell application "Terminal"
-            if exists (window id \(windowID)) then
-                set tabContent to contents of current tab of window id \(windowID)
-                return tabContent
-            end if
-            return ""
-        end tell
-        """
-
-        let result = try runner.run(script)
-        guard let full = result?.stringValue, !full.isEmpty else { return "" }
-
-        // Return only the last N lines.
-        let lines = full.components(separatedBy: .newlines)
-        let tail = lines.suffix(lineCount)
-        return tail.joined(separator: "\n")
-    }
-
     func detectIdleWindowIDs(among windowIDs: [Int]) throws -> Set<Int> {
         guard !windowIDs.isEmpty else { return [] }
 

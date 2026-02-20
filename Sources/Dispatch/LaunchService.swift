@@ -109,12 +109,6 @@ final class LaunchService: @unchecked Sendable {
         try controller.applyIdentity(windowID: agent.windowID, title: agent.title, badge: agent.badge, tone: agent.tone)
     }
 
-    /// Read the last few lines of terminal content for a specific window.
-    func readSessionContent(windowID: Int, terminal: TerminalApp, lineCount: Int = 20) -> String? {
-        guard let controller = controllers[terminal] else { return nil }
-        return try? controller.readSessionContent(windowID: windowID, lineCount: lineCount)
-    }
-
     /// Known tool IDs that are TUI apps where idle detection makes sense.
     private static let monitoredToolIDs: Set<String> = ["claude", "codex", "opencode"]
 

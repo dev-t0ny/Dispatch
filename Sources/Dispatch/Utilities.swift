@@ -70,14 +70,6 @@ struct Shell {
         return escaped
     }
 
-    static func shellEscapeForDoubleQuotes(_ value: String) -> String {
-        var escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
-        escaped = escaped.replacingOccurrences(of: "\"", with: "\\\"")
-        escaped = escaped.replacingOccurrences(of: "`", with: "\\`")
-        escaped = escaped.replacingOccurrences(of: "$", with: "\\$")
-        return escaped
-    }
-
     static func executableName(from command: String) -> String {
         command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? command
     }
